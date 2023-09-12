@@ -26,8 +26,7 @@ dc2017tracts <- get_acs('tract',
                         year = 2017,
                         state = 'DC',
                         geometry = TRUE,
-                        output = 'wide')%>%
-  
+                        output = 'wide') %>%
   rename('Total_pop' = 'B25026_001E',
          'African_pop' = 'B05003B_001E',
          'White_pop' = 'B05003A_001E',
@@ -44,8 +43,8 @@ dc2017tracts <- get_acs('tract',
 
 dc_boundary <- st_union(dc2017tracts)
 
-dcmetro <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Transportation_Rail_Bus_WebMercator/MapServer/51/query?outFields=*&where=1%3D1&f=geojson')
-dcmetro <- st_transform('EPSG:2248') 
+dcmetro <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Transportation_Rail_Bus_WebMercator/MapServer/51/query?outFields=*&where=1%3D1&f=geojson') %>%
+  st_transform('EPSG:2248') 
 dcmetro <- dcmetro[st_intersects(dcmetro, dc_boundary) %>% lengths > 0, ]
 
 ggplot()+
