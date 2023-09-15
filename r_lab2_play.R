@@ -12,13 +12,21 @@ variables2009 <- load_variables(2009,'acs5')
 variables_join <- inner_join(variables2017,variables2009, by='name','suffix'=c('_2017','_2009')) %>%
   dplyr::filter(geography == 'tract')
 
-acs_variables <- c(
+acs_variables2017 <- c(
                    'B25119_001', #Median Household Income
                    'B25058_001', #Rent
                    'B08130_001', #Total Working Population
                    'B08130_016', #Total Population Commuting on Public Transit
-                   'B17009_002', #Total Population with Income Below Poverty Level
+                   'B08126_014', #Public Administration Workforce
                    'B17009_001') #Total Population
+
+acs_variables2009 <- c(
+  'B25119_001', #Median Household Income
+  'B25058_001', #Rent
+  'B08130_001', #Total Working Population
+  'B08130_016', #Total Population Commuting on Public Transit
+  'B08526_014', #Public Administration Workforce
+  'B17009_001') #Total Population
 
 
 options(scipen=999) #
@@ -30,7 +38,7 @@ palette5 <- c("#f0f9e8","#bae4bc","#7bccc4","#43a2ca","#0868ac")
 
 
 dc2017tracts <- get_acs('tract',
-                        variables = acs_variables,
+                        variables = acs_variables2017,
                         year = 2017,
                         state = 'DC',
                         geometry = TRUE,
@@ -40,7 +48,8 @@ dc2017tracts <- get_acs('tract',
          'working_pop' = 'B08130_001E',
          'transit_pop' = 'B08130_016E',
          'poverty_pop' = 'B17009_002E',
-         'total_pop' = 'B17009_001E',) %>%
+         'total_pop' = 'B17009_001E',
+          ) %>%
   st_transform('EPSG:2248') %>%
   mutate(pct_transit = (transit_pop / working_pop) * 100,
          pct_poverty = (poverty_pop / total_pop) * 100,
@@ -48,7 +57,7 @@ dc2017tracts <- get_acs('tract',
   dplyr::select(-NAME, -starts_with("B0"), -starts_with("B1"), -starts_with("B2"))
 
 dc2009tracts <- get_acs('tract',
-                        variables = acs_variables,
+                        variables = acs_variables2009,
                         year = 2009,
                         state = 'DC',
                         geometry = TRUE,

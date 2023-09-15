@@ -1,0 +1,199 @@
+---
+title: "RBarad_HW2"
+output: html_document
+date: "2023-09-15"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.ritna = 3)
+```
+
+## Import Libraries
+
+```{r import_libraries}
+library(tidycensus)
+library(tidyverse)
+library(kableExtra)
+library(sf)
+```
+
+# Set options and create color palette
+
+```{r set_options, echo=FALSE}
+
+options(scipen=999) #
+options(tigris_class = "sf")
+
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
+palette5 <- c("#f0f9e8","#bae4bc","#7bccc4","#43a2ca","#0868ac")
+
+```
+
+#Get Census Data
+
+##Set ACS variables
+
+```{r set_variables}
+
+acs_variables2017 <- c(
+                   'B25119_001', #Median Household Income
+                   'B25058_001', #Rent
+                   'B08130_001', #Total Working Population
+                   'B08130_016', #Total Population Commuting on Public Transit
+                   'B08126_014', #Public Administration Workforce
+                   'B17009_001') #Total Population
+
+acs_variables2009 <- c(
+  'B25119_001', #Median Household Income
+  'B25058_001', #Rent
+  'B08130_001', #Total Working Population
+  'B08130_016', #Total Population Commuting on Public Transit
+  'C24030_028', #Public Administration Workforce Female
+  'B17009_001') #Total Population
+```
+
+
+##Import 2009 Census Data
+
+```{r import_2009_data}
+dc2009tracts <- get_acs('tract',
+                        variables = acs_variables2009,
+                        year = 2009,
+                        state = 'DC',
+                        geometry = TRUE,
+                        output = 'wide') %>%
+  rename('median_income'='B25119_001E',
+         'median_rent'='B25058_001E',
+         'working_pop' = 'B08130_001E',
+         'transit_pop' = 'B08130_016E',
+         'public_pop' = 'B08526_014E',
+         'total_pop' = 'B17009_001E',) %>%
+  st_transform('EPSG:2248') %>%
+  mutate(pct_transit = (transit_pop / working_pop) * 100,
+         pct_public = (public_pop / working_pop) * 100,
+         year = '2009') %>%
+  dplyr::select(-NAME, -starts_with("B0"), -starts_with("B1"), -starts_with("B2"))
+```
+
+##Import 2017 Census Data
+
+```{r import_2017_data}
+dc2017tracts <- get_acs('tract',
+                        variables = acs_variables2017,
+                        year = 2017,
+                        state = 'DC',
+                        geometry = TRUE,
+                        output = 'wide') %>%
+  rename('median_income'='B25119_001E',
+         'median_rent'='B25058_001E',
+         'working_pop' = 'B08130_001E',
+         'transit_pop' = 'B08130_016E',
+         'public_pop' = 'B08126_014E',
+         'total_pop' = 'B17009_001E',) %>%
+  st_transform('EPSG:2248') %>%
+  mutate(pct_transit = (transit_pop / working_pop) * 100,
+         pct_public = (public_pop / working_pop) * 100,
+         year = '2017') %>%
+  dplyr::select(-NAME, -starts_with("B0"), -starts_with("B1"), -starts_with("B2"))
+```
+
+##Bind Census data
+
+```{r bind data}
+census_bind = rbind(dc2009tracts, dc2017tracts)
+```
+
+#Procees DC Metro Data
+
+##Get DC Metro Data
+```{r get_metro_data}
+dc_boundary <- st_union(dc2017tracts) #Create union of all census tracts in DC
+
+dcmetro <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Transportation_Rail_Bus_WebMercator/MapServer/51/query?outFields=*&where=1%3D1&f=geojson') %>%
+  st_transform('EPSG:2248') #Download DC Metro points and set projection
+dcmetro <- dcmetro[st_intersects(dcmetro, dc_boundary) %>% lengths > 0, ] #Intersect DC metro points with DC boundary
+```
+
+##Buffer Metro Points
+```{r buffer_metro}
+metro_buffer <- st_union(st_buffer(dcmetro,1320))
+```
+
+##Identify TOD and Non-TOD
+```{r identify_TOD}
+tod2017 <- dc2017tracts[st_intersects(dc2017tracts, metro_buffer) %>% lengths > 0, ] %>%
+  mutate(type='TOD')
+
+non_tod2017 <- dc2017tracts[st_disjoint(dc2017tracts, metro_buffer) %>% lengths > 0, ] %>%
+  mutate(type='Non-TOD')
+
+tod2009 <- dc2009tracts[st_intersects(dc2009tracts, metro_buffer) %>% lengths > 0, ] %>%
+  mutate(type='TOD')
+
+non_tod2009 <- dc2009tracts[st_disjoint(dc2009tracts, metro_buffer) %>% lengths > 0, ] %>%
+  mutate(type='Non-TOD')
+
+all_census_data <- rbind(non_tod2017,tod2017,tod2009,non_tod2009)
+```
+
+
+#Make Maps
+
+```{r make_tod_map}
+ggplot()+
+  geom_sf(data = all_census_data, aes(fill = type))+
+  geom_sf(data = metro_buffer,fill='transparent',color='red')+
+  facet_wrap(~year)+
+  mapTheme()
+```
+
+
+##Map1
+
+```{r make_income_map}
+ggplot()+
+  geom_sf(data = census_bind, aes(fill = q5(median_income)))+
+  geom_sf(data = metro_buffer,fill='transparent',color='red')+
+  facet_wrap(~year)+
+  scale_fill_manual(values = palette5,
+                    name = "Median Income\n(Quintile Breaks)")+
+  mapTheme()
+```
+
+##Map2
+
+```{r make_rent_map}
+ggplot()+
+  geom_sf(data = census_bind, aes(fill = q5(median_rent)))+
+  geom_sf(data = metro_buffer,fill='transparent',color='red')+
+  facet_wrap(~year)+
+  scale_fill_manual(values = palette5,
+                    name = "Median Rent\n(Quintile Breaks)")+
+  mapTheme()
+```
+
+##Map3
+
+```{r make_transit_map}
+ggplot()+
+  geom_sf(data = census_bind, aes(fill = q5(pct_transit)))+
+  geom_sf(data = metro_buffer,fill='transparent',color='red')+
+  facet_wrap(~year)+
+  scale_fill_manual(values = palette5,
+                    name = "Percent Transit\n(Quintile Breaks)")+
+  mapTheme()
+```
+
+##Map4
+
+```{r make_transit_map}
+ggplot()+
+  geom_sf(data = census_bind, aes(fill = q5(pct_public)))+
+  geom_sf(data = metro_buffer,fill='transparent',color='red')+
+  facet_wrap(~year)+
+  scale_fill_manual(values = palette5,
+                    name = "Percent Public\n(Quintile Breaks)")+
+  mapTheme()
+```
