@@ -75,7 +75,7 @@ dcmetro <- dcmetro[st_intersects(dcmetro, dc_boundary) %>% lengths > 0, ]
 
 ggplot()+
   geom_sf(data = census_bind, aes(fill = q5(median_income)))+
-  #geom_sf(data = dcmetro)+
+  geom_sf(data = dcmetro)+
   facet_wrap(~year)+
   scale_fill_manual(values = palette5,
                     name = "Median Income\n(Quintile Breaks)")+
