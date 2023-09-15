@@ -132,6 +132,8 @@ tod2009 <- dc2009tracts[st_intersects(dc2009tracts, metro_buffer) %>% lengths > 
 non_tod2009 <- dc2009tracts[st_disjoint(dc2009tracts, metro_buffer) %>% lengths > 0, ] %>%
   mutate(type='Non-TOD')
 
+tod_dissolve <- st_union(tod2009)
+
 all_census_data <- rbind(non_tod2017,tod2017,tod2009,non_tod2009)
 ```
 
@@ -152,7 +154,8 @@ ggplot()+
 ```{r make_income_map}
 ggplot()+
   geom_sf(data = all_census_data, aes(fill = q5(median_income)))+
-  geom_sf(data = metro_buffer,fill='transparent',color='red')+
+  geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=1)+
+  geom_sf(data = dcmetro)+
   facet_wrap(~year)+
   scale_fill_manual(values = palette5,
                     name = "Median Income\n(Quintile Breaks)")+
@@ -164,6 +167,8 @@ ggplot()+
 ```{r make_rent_map}
 ggplot()+
   geom_sf(data = all_census_data, aes(fill = q5(median_rent)))+
+  geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=1)+
+  geom_sf(data = dcmetro)+
   geom_sf(data = metro_buffer,fill='transparent',color='red')+
   facet_wrap(~year)+
   scale_fill_manual(values = palette5,
@@ -176,7 +181,8 @@ ggplot()+
 ```{r make_transit_usage_map}
 ggplot()+
   geom_sf(data = all_census_data, aes(fill = q5(pct_transit)))+
-  geom_sf(data = metro_buffer,fill='transparent',color='red')+
+  geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=1)+
+  geom_sf(data = dcmetro)+
   facet_wrap(~year)+
   scale_fill_manual(values = palette5,
                     name = "Percent Transit\n(Quintile Breaks)")+
@@ -188,7 +194,8 @@ ggplot()+
 ```{r make_publicadmin_map}
 ggplot()+
   geom_sf(data = all_census_data, aes(fill = q5(pct_public)))+
-  geom_sf(data = metro_buffer,fill='transparent',color='red')+
+  geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=1)+
+  geom_sf(data = dcmetro)+
   facet_wrap(~year)+
   scale_fill_manual(values = palette5,
                     name = "Percent Public\n(Quintile Breaks)")+
