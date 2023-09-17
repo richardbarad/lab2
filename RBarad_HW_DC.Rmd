@@ -31,9 +31,9 @@ palette5 <- c("#ffffd4","#fed98e","#fe9929","#d95f0e","#993404")
 
 ```
 
-#Get Census Data
+# Get Census Data
 
-##Set ACS variables
+## Set ACS variables
 
 ```{r set_variables}
 
@@ -56,7 +56,7 @@ acs_variables2009 <- c(
 ```
 
 
-##Import 2009 Census Data
+## Import 2009 Census Data
 
 ```{r import_2009_data}
 dc2009tracts <- get_acs('tract',
@@ -80,7 +80,7 @@ dc2009tracts <- get_acs('tract',
   dplyr::select(-NAME, -starts_with("B0"), -starts_with("B1"), -starts_with("B2"),-starts_with("C2"), -male_public_pop, -female_public_pop)
 ```
 
-##Import 2017 Census Data
+## Import 2017 Census Data
 
 ```{r import_2017_data}
 dc2017tracts <- get_acs('tract',
@@ -102,9 +102,9 @@ dc2017tracts <- get_acs('tract',
   dplyr::select(-NAME, -starts_with("B0"), -starts_with("B1"), -starts_with("B2"))
 ```
 
-#Procees DC Metro Data
+# Procees DC Metro Data
 
-##Get DC Metro Data
+## Get DC Metro Data
 ```{r get_metro_data}
 dc_boundary <- st_union(dc2017tracts) #Create union of all census tracts in DC
 
@@ -113,12 +113,13 @@ dcmetro <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Tr
 dcmetro <- dcmetro[st_intersects(dcmetro, dc_boundary) %>% lengths > 0, ] #Intersect DC metro points with DC boundary
 ```
 
-##Buffer Metro Points
+## Buffer Metro Points
+
 ```{r buffer_metro}
 metro_buffer <- st_union(st_buffer(dcmetro,1320))
 ```
 
-##Identify TOD and Non-TOD
+## Identify TOD and Non-TOD
 ```{r identify_TOD}
 tod2017 <- dc2017tracts[st_intersects(dc2017tracts, metro_buffer) %>% lengths > 0, ] %>%
   mutate(type='TOD')
@@ -137,7 +138,8 @@ tod_dissolve <- st_union(tod2009)
 all_census_data <- rbind(non_tod2017,tod2017,tod2009,non_tod2009)
 ```
 
-#Get Other Data for Map
+# Get Other Data for Map
+
 ```{r get_other_data}
 dcmetrolines <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Transportation_Rail_Bus_WebMercator/MapServer/58/query?outFields=*&where=1%3D1&f=geojson') %>%
   st_transform('EPSG:2248') #Download DC Metro points and set projection
@@ -147,7 +149,7 @@ dcwater <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Pl
   filter(DESCRIPTION != 'Pond' & DESCRIPTION != 'Pool')
 ```
 
-#Make Maps
+# Make Maps
 
 ```{r make_tod_map}
 ggplot()+
@@ -157,8 +159,7 @@ ggplot()+
   mapTheme()
 ```
 
-
-##Map1
+## Map1
 
 ```{r make_income_map}
 
@@ -177,7 +178,7 @@ ggplot()+
   mapTheme()
 ```
 
-##Map2
+## Map2
 
 ```{r make_rent_map}
 ggplot()+
@@ -190,9 +191,10 @@ ggplot()+
   mapTheme()
 ```
 
-##Map3
+## Map3
 
 ```{r make_transit_usage_map}
+
 ggplot()+
   geom_sf(data = all_census_data, aes(fill = q5(pct_transit)))+
   geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=1)+
@@ -203,7 +205,7 @@ ggplot()+
   mapTheme()
 ```
 
-##Map4
+## Map4
 
 ```{r make_publicadmin_map}
 ggplot()+
@@ -217,7 +219,7 @@ ggplot()+
 ```
 
 
-##Lapply Maps - this the map code from Nohman
+## Lapply Maps - this the map code from Nohman
 ```{r make_lapply_maps}
 maps <- lapply(c("median_income", "median_rent", "pct_transit", "pct_public"), function(i) {  
   ggplot()+  
@@ -230,9 +232,42 @@ maps <- lapply(c("median_income", "median_rent", "pct_transit", "pct_public"), f
 
 print(maps)
 ```
-#Pop Analysis
 
-##Population Analysis
+# Groupped Bar Plots
+
+```{r groupped_bar_plot}
+census_data_summary <- 
+  st_drop_geometry(all_census_data) %>%
+  group_by(year, type) %>%
+  summarize(median_income = mean(median_income, na.rm = T),
+            median_rent = mean(median_rent, na.rm = T),
+            percent_transit = mean(pct_transit, na.rm = T),
+            percent_public = mean(pct_public, na.rm = T))
+
+census_data_summary %>%
+  gather(Variable, Value, -year, -type) %>%
+  ggplot(aes(year, Value, fill = type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~Variable, scales = "free", ncol=5) +
+  scale_fill_manual(values = c("#bae4bc", "#0868ac")) +
+  labs(title = "Indicator differences across time and space") +
+  plotTheme() + theme(legend.position="bottom")
+
+```
+
+# Kable Table
+
+```{r kable_table}
+kable(census_data_summary) %>%
+  kable_styling() %>%
+  footnote(general_title = "\n",
+           general = "Table 1.0")
+```
+
+
+# Pop Analysis
+
+## Population Analysis
 
 ```{r population_analysis}
 
@@ -252,7 +287,7 @@ metro_pop <- st_join(half_mile_buffer,centroids %>% dplyr::select(GEOID,year,tot
 dcmetro <- inner_join(dcmetro,metro_pop,by='NAME')
 ```
 
-##Make Population Map
+## Make Population Map
 
 ```{r make_pop_map}
 
@@ -265,7 +300,7 @@ ggplot()+
   facet_wrap(~year)
 ```
 
-##Make Rent Map
+## Make Rent Map
 
 ```{r make_rent_map}
 
@@ -278,7 +313,7 @@ ggplot()+
   facet_wrap(~year)
 ```
 
-#Multi Ring Buffer Analysis
+# Multi Ring Buffer Analysis
 
 
 ```{r make_rent_map}
