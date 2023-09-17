@@ -618,7 +618,6 @@ allTracts.rings <-
   mutate(distance = distance / 5280) #convert to miles
 
 
-
   ggplot() +
     geom_sf(data=septa_MRB) +
     geom_sf(data=septaStops, size=1) +
