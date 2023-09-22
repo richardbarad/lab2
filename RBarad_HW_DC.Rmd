@@ -1,17 +1,27 @@
 ---
-title: "RBarad_HW2"
-output: html_document
-date: "2023-09-15"
+title: "Transportation Oriented Development in Washington DC"
+author: "Richard Barad"
+date: "2023-09-22"
+output: 
+  html_document:
+    code_folding: hide
+    number_section: True
+    toc: true
+    toc_float: true
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE,
-                      fig.ritna = 3)
+knitr::opts_chunk$set(
+	echo = TRUE,
+	fig.ritna = 3,
+	message = TRUE,
+	warning = TRUE
+)
 ```
 
-## Import Libraries
+# Import Libraries
 
-```{r import_libraries}
+```{r import_libraries, message=FALSE}
 library(tidycensus)
 library(tidyverse)
 library(kableExtra)
@@ -20,22 +30,27 @@ library(sf)
 
 # Set options and create color palette
 
-```{r set_options, echo=FALSE}
+```{r set_options, message=FALSE}
 
 options(scipen=999) #
 options(tigris_class = "sf")
 
 source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
 
-palette5 <- c("#ffffd4","#fed98e","#fe9929","#d95f0e","#993404")
+palette5 <- c("#edf8e9","#bae4b3","#74c476","#31a354","#006d2c")
 
 ```
 
 # Get Census Data
 
+## Set Census API KEY
+```{r census_API, message=FALSE}
+census_api_key('4b917a3ebce557bc497aebb5aba1b04f0ff9c5ba',overwrite = TRUE)
+```
+
 ## Set ACS variables
 
-```{r set_variables}
+```{r set_variables, message=FALSE}
 
 acs_variables2017 <- c(
                    'B25119_001', #Median Household Income
@@ -43,7 +58,7 @@ acs_variables2017 <- c(
                    'B08130_001', #Total Working Population
                    'B08130_016', #Total Population Commuting on Public Transit
                    'B08126_014', #Public Administration Workforce
-                   'B17009_001') #Total Population
+                   'B01001_001') #Total Population
 
 acs_variables2009 <- c(
   'B25119_001', #Median Household Income
@@ -52,13 +67,12 @@ acs_variables2009 <- c(
   'B08130_016', #Total Population Commuting on Public Transit
   'C24030_028', #Public Administration Workforce Male
   'C24030_055', #Public Administration Workforce Female
-  'B17009_001') #Total Population
+  'B01001_001') #Total Population
 ```
-
 
 ## Import 2009 Census Data
 
-```{r import_2009_data}
+```{r import_2009_data, message=FALSE, warning=FALSE,results='hide'}
 dc2009tracts <- get_acs('tract',
                         variables = acs_variables2009,
                         year = 2009,
@@ -71,18 +85,21 @@ dc2009tracts <- get_acs('tract',
          'transit_pop' = 'B08130_016E',
          'male_public_pop' = 'C24030_028E',
          'female_public_pop' = 'C24030_055E',
-         'total_pop' = 'B17009_001E') %>%
+         'total_pop' = 'B01001_001E') %>%
   st_transform('EPSG:2248') %>%
-  mutate(pct_transit = (transit_pop / working_pop) * 100,
+  dplyr::filter('total_pop' != 0) %>%
+  mutate(pct_transit = round((transit_pop / working_pop) * 100,2),
          public_pop = male_public_pop + female_public_pop,
-         pct_public = (public_pop / working_pop) * 100,
+         pct_public = round((public_pop / working_pop) * 100,2),
+         median_income = median_income * 1.14,
+         median_rent = median_rent * 1.14,
          year = '2009') %>%
   dplyr::select(-NAME, -starts_with("B0"), -starts_with("B1"), -starts_with("B2"),-starts_with("C2"), -male_public_pop, -female_public_pop)
 ```
 
 ## Import 2017 Census Data
 
-```{r import_2017_data}
+```{r import_2017_data, message=FALSE,results='hide'}
 dc2017tracts <- get_acs('tract',
                         variables = acs_variables2017,
                         year = 2017,
@@ -94,18 +111,24 @@ dc2017tracts <- get_acs('tract',
          'working_pop' = 'B08130_001E',
          'transit_pop' = 'B08130_016E',
          'public_pop' = 'B08126_014E',
-         'total_pop' = 'B17009_001E',) %>%
+         'total_pop' = 'B01001_001E',) %>%
   st_transform('EPSG:2248') %>%
-  mutate(pct_transit = (transit_pop / working_pop) * 100,
-         pct_public = (public_pop / working_pop) * 100,
+  dplyr::filter('total_pop' != 0) %>%
+  mutate(pct_transit = round((transit_pop / working_pop) * 100,2),
+         pct_public = round((public_pop / working_pop) * 100,2),
          year = '2017') %>%
   dplyr::select(-NAME, -starts_with("B0"), -starts_with("B1"), -starts_with("B2"))
+```
+
+## Bind all data together
+```{r bind_data, message=FALSE}
+all_census_data = rbind(dc2017tracts,dc2009tracts)
 ```
 
 # Procees DC Metro Data
 
 ## Get DC Metro Data
-```{r get_metro_data}
+```{r get_metro_data, message=FALSE,results='hide'}
 dc_boundary <- st_union(dc2017tracts) #Create union of all census tracts in DC
 
 dcmetro <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Transportation_Rail_Bus_WebMercator/MapServer/51/query?outFields=*&where=1%3D1&f=geojson') %>%
@@ -115,32 +138,37 @@ dcmetro <- dcmetro[st_intersects(dcmetro, dc_boundary) %>% lengths > 0, ] #Inter
 
 ## Buffer Metro Points
 
-```{r buffer_metro}
-metro_buffer <- st_union(st_buffer(dcmetro,1320))
+```{r buffer_metro, message=FALSE}
+metro_buffer <- st_buffer(dcmetro,2640)
+metro_union_buffer <- st_union(metro_buffer)
 ```
 
-## Identify TOD and Non-TOD
-```{r identify_TOD}
-tod2017 <- dc2017tracts[st_intersects(dc2017tracts, metro_buffer) %>% lengths > 0, ] %>%
-  mutate(type='TOD')
+## Get the centroids of the census tracts and identify TOD and Non-TOD
 
-non_tod2017 <- dc2017tracts[st_disjoint(dc2017tracts, metro_buffer) %>% lengths > 0, ] %>%
-  mutate(type='Non-TOD')
+```{r identify_tod, message=FALSE, warning=FALSE}
+centroids <- st_centroid(all_census_data)
 
-tod2009 <- dc2009tracts[st_intersects(dc2009tracts, metro_buffer) %>% lengths > 0, ] %>%
-  mutate(type='TOD')
+tod <- centroids[st_intersects(centroids,metro_union_buffer) %>% lengths > 0, ] %>%
+  st_drop_geometry() %>%
+  left_join(all_census_data) %>%
+  st_sf() %>%
+  mutate(type='tod')
 
-non_tod2009 <- dc2009tracts[st_disjoint(dc2009tracts, metro_buffer) %>% lengths > 0, ] %>%
-  mutate(type='Non-TOD')
+non_tod <- centroids[st_disjoint(centroids,metro_union_buffer) %>% lengths > 0, ] %>%
+  st_drop_geometry() %>%
+  left_join(all_census_data) %>%
+  st_sf() %>%
+  mutate(type='non-TOD')
 
-tod_dissolve <- st_union(tod2009)
+all_census_data <- rbind(tod, non_tod)
 
-all_census_data <- rbind(non_tod2017,tod2017,tod2009,non_tod2009)
+tod_dissolve <- st_union(tod)
+
+dcmetro$tod_change[dcmetro$NAME %in% c("Columbia Heights","Georgia Ave-Petworth","Brookland-CUA","NoMa-Gallaudet U")] <- 'Yes'
+
 ```
 
-# Get Other Data for Map
-
-```{r get_other_data}
+```{r get_other_data, message=FALSE,include=FALSE,results='hide'}
 dcmetrolines <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Transportation_Rail_Bus_WebMercator/MapServer/58/query?outFields=*&where=1%3D1&f=geojson') %>%
   st_transform('EPSG:2248') #Download DC Metro points and set projection
 dcmetrolines <- st_intersection(dcmetrolines,dc_boundary)
@@ -149,17 +177,29 @@ dcwater <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Pl
   filter(DESCRIPTION != 'Pond' & DESCRIPTION != 'Pool')
 ```
 
-# Make Maps
+# Mapping the TOD Area
 
-```{r make_tod_map}
+Transited oriented development (TOD) refers to the trend of creating vibrant, livable communities which are compact, walkable, and centered around transit systems. Washington DC has experienced TOD in many sections of the city with new apartment buildings being constructed near metro stops throughout the city. This memo attempts to look at the impacts of TOD development on income and rent. We will also examine if residents living in the TOD are more likely to commute to work on public transit. We look at the spatial patterns of where workers working in public administration tend to live, and examine if they are more likely to live in neighborhoods near the metro.
+
+The analysis starts by identifying the TOD area. This analysis defines the TOD area as including all census tracts whose center is located within 1/2 a mile of a metro stop. The map below shows the census tracts included in the TOD area. All census tracts which are not part of the TOD area are shown in green - these census tracts will be refereed to as the non-TOD area. 
+
+This analysis focuses exclusively on metro stops and does not consider bus stops. This is because metro is generally considered faster, more reliable form of public transportation and residents are more likely to be willing to pay more in rent to live near a metro stop. Additionally, transit oriented development in Washington DC has tended occur around metro stops not bus stops. 
+
+```{r make_tod_map, warning=FALSE,message=FALSE}
 ggplot()+
   geom_sf(data = all_census_data, aes(fill = type))+
-  geom_sf(data = metro_buffer,fill='transparent',color='red')+
+  geom_sf(data = dcwater,fill='#5ee4ff',color=NA)+
+  geom_sf(data = dcmetro,size=1.3)+
+  ggtitle("Map of TOD and Non-TOD Areas")+
+  scale_fill_manual(values = c('#9effa9','red'),
+                    labels = c('Non-TOD','TOD'))+
   facet_wrap(~year)+
   mapTheme()
 ```
 
-## Map1
+## Mean Annual Income in the TOD
+
+The maps below show the mean annual income by census tract in 2009 and 2019 - the TOD area is indicated by the red outline and metro stops are shown as black dots. The 2009 data is adjusted for inflation, and income data is presented using the value of the dollar in 2017. Income in Washington DC is generally highest in the Northwestern areas of Washington DC, while census tracts West of the Anacostia river have the lowest annual income. Annual income has increased in several census tracts located within the TOD. Metro stops where there is a notable increase in income in the census tracts surrounding the metro stop are visualized in the map as larger dots. Areas of the TOD where we observe a large increase in income levels from 2009 to 2017 include census tracts near the Columbia Heights and Petworth metro stops on the green metro line, and tracts located near the Brookland and NOMA metro stops on the red line.
 
 ```{r make_income_map}
 
@@ -167,101 +207,133 @@ all_census_data <- all_census_data %>%
   mutate(income_class = cut(median_income, breaks = c(0, 25000, 50000, 75000, 100000, max(all_census_data$median_income, na.rm=TRUE))))
 
 ggplot()+
-  geom_sf(data = all_census_data, aes(fill = income_class))+
-  geom_sf(data = dcwater,fill='#5ee4ff',linewidth=0)+
-  #geom_sf(data = dcmetrolines,linewidth=0.5)+
-  geom_sf(data = tod_dissolve,fill='transparent',color='#2dc11e',linewidth=1)+
-  geom_sf(data = dcmetro)+
+  geom_sf(data = all_census_data,linewidth=0.1,color='grey70',aes(fill = income_class))+
+  geom_sf(data = dcwater,fill='#5ee4ff',color=NA)+
+  geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=1)+
+  geom_sf(data = dcmetro,size=1.3)+
+  geom_sf(data = dcmetro %>% filter(tod_change == 'Yes'),size=3,fill='gray50')+
+  ggtitle('Median Annual Income')+
   facet_wrap(~year)+
   scale_fill_manual(values = palette5,
-                    name = "Median Income")+
+                    name = "Income (USD)",
+                    na.value = 'grey80',
+                    labels = c('0 - 25,000','25,001 - 50,000','50,001 - 75,000','75,0001 - 100,000', '>100,000','No Data'))+
   mapTheme()
 ```
 
-## Map2
+## Median Rent in the TOD
+
+The maps below show the median monthly rent by census tract in 2009 and 2017. As in the previous map, the TOD area is shown by a red outline and metro stops are shown as black dots. Rent has increased sharply in many neighborhoods in Washington DC from 2009 to 2017. The 2009 map has been adjusted for inflation, and all data is represented using the value of a dollar in 2017. Rent has increased from 2009 to 2017 in several areas of Washington DC - some of the largest increases in rent have occurred in neighborhoods located in the TOD area. Notably, the census tracts located near the Columbia Heights, Petworth, Brookland, Fort Totten, and Takoma metro stops have all experienced increases in rent - in these neighborhoods residents appear to be willing to pay more in rent to live near the metro. However, the pattern of rising rents in the TOD area is not present in all parts of the city, residents living east of the Anacostia river continue to have some of the lowest rents in Washington DC. The cost of rent east of the Anacostia is similar in the TOD and non-TOD areas. 
 
 ```{r make_rent_map}
+all_census_data <- all_census_data %>% 
+  mutate(rent_class = cut(median_rent, breaks = c(0, 500, 1000, 1500, 2000, max(all_census_data$median_rent, na.rm=TRUE))))
+
 ggplot()+
-  geom_sf(data = all_census_data, aes(fill = q5(median_rent)))+
+  geom_sf(data = all_census_data,linewidth=0.1,color='grey70',aes(fill = rent_class))+
+  geom_sf(data = dcwater,fill='#5ee4ff',color=NA)+
   geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=1)+
-  geom_sf(data = dcmetro)+
+  geom_sf(data = dcmetro,size=1.3)+
+  ggtitle("Median Monthly Rent")+
   facet_wrap(~year)+
   scale_fill_manual(values = palette5,
-                    name = "Median Rent\n(Quintile Breaks)")+
+                    name = "Rent (USD)",
+                    na.value = 'grey80',
+                    labels = c('<=500','501 - 1,000','1,001 - 1,500','1,501 - 2,000', '>2,000'))+
   mapTheme()
 ```
 
-## Map3
+## Public Transit Usage in the TOD
+
+These maps show the percent of workers using any form of public transit to commute to work in 2009 and 2017. As in the previous maps, TOD area is shown by the red line and metro stops are presented as block dots. The percentage of workers commuting to work on public transit is higher in the TOD area. The may be partially attributed to the faster speed and greater reliability of metro compared to the bus. Residents who have the ability to live in desirable areas with high rent and want to commute by public transit appear to be choosing to live near metro stops. For instance, areas with high rents along the green line and both branches of the red line also have a high percentage of residents commuting to work on public transit. 
+
+Metro stops in the downtown corridor do not have a high percentage of the population living near the metro stops commuting to work on public transit. This may be because residents who live downtown are likely to also work downtown and live close enough to their workplace to walk to work. However, additional analysis is needed to confirm this hypothesis. In areas with high income which are also located outside of the TOD-area residents are not likely to commute to work on public transit. 
 
 ```{r make_transit_usage_map}
 
+all_census_data <- all_census_data %>% 
+  mutate(transit_class = cut(pct_transit, breaks = c(0, 20, 30, 40, 50, max(all_census_data$pct_transit, na.rm=TRUE))))
+
 ggplot()+
-  geom_sf(data = all_census_data, aes(fill = q5(pct_transit)))+
+  geom_sf(data = all_census_data,linewidth=0.1,color='grey70',aes(fill = transit_class))+
+  geom_sf(data = dcwater,fill='#5ee4ff',color=NA)+
   geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=1)+
-  geom_sf(data = dcmetro)+
+  geom_sf(data = dcmetro,size=1.3)+
+  ggtitle("Percent of Workers Commuting on Public Transit")+
   facet_wrap(~year)+
   scale_fill_manual(values = palette5,
-                    name = "Percent Transit\n(Quintile Breaks)")+
+                    name = "Percent",
+                    na.value = 'grey80',
+                    labels = c('<=20%','21 - 30%','31 - 40%','41 - 50%', '>50%'))+
   mapTheme()
 ```
 
-## Map4
+## Public Administration Workers
+
+Public sector jobs represent a large employment sector in the DMV area, accounting for 15 percent of jobs. Public administration works tend to have higher incomes than workers in the service industry, but lower incomes than employees working in office jobs in the private sector. Federal employees also receive a commuter benefit which can offset the cost of commuting to work on public transit. Looking at where public administrative workers are living can help us determine if federal workers are using this benefit. 
+
+Federal workers appear to be choosing to live within the TOD area in close proximity to metro - federal commuter benefits may be contributing to this choice. Additionally, the percentage of federal workers living in the downtown corridor has declined from 2009 to 2017. As shown in previous maps, the downtown corridor has some of the highest rents in the city and public administration workers may be getting priced out of these areas as rent continues to increase. Conversely, the percentage of federal workers living near the Brookland, NOMA, and Fort Totten metro stops has increased in 2017 compared to 2009. As shown in the income and rent maps, these neighborhoods have experienced increases in rent and average income level, but rent remains lower than the most expensive parts of the city. These recently developed areas are suitable for public administration workers because the neighborhoods are desirable and provide easy access to public transit while still being affordable to middle income residents such as public administration workers.
 
 ```{r make_publicadmin_map}
+all_census_data <- all_census_data %>% 
+  mutate(public_class = cut(pct_public, breaks = c(0, 10, 15, 20, 25, max(all_census_data$pct_public, na.rm=TRUE))))
+
 ggplot()+
-  geom_sf(data = all_census_data, aes(fill = q5(pct_public)))+
+  geom_sf(data = all_census_data,linewidth=0.1,color='grey70',aes(fill = public_class))+
+  geom_sf(data = dcwater,fill='#5ee4ff',color=NA)+
   geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=1)+
-  geom_sf(data = dcmetro)+
+  geom_sf(data = dcmetro,size=1.3)+
+  ggtitle("Percent of Workers in Public Adminstration")+
   facet_wrap(~year)+
   scale_fill_manual(values = palette5,
-                    name = "Percent Public\n(Quintile Breaks)")+
+                    name = "Percent",
+                    na.value = 'grey80',
+                    labels = c('<=10%','11 - 15%','16 - 20%','21 - 25%', '>25%'))+
   mapTheme()
 ```
 
 
-## Lapply Maps - this the map code from Nohman
-```{r make_lapply_maps}
-maps <- lapply(c("median_income", "median_rent", "pct_transit", "pct_public"), function(i) {  
-  ggplot()+  
-    geom_sf(data = all_census_data, aes(fill = q5(all_census_data[[i]])))+  
-    geom_sf(data = metro_buffer,fill='transparent',color='red')+  
-    facet_wrap(~year)+  
-    scale_fill_manual(values = palette5,                    
-                   name = "Median Income\n(Quintile Breaks)")+  
-  mapTheme()})
+# Comparing Indicators Across Time and Space
 
-print(maps)
-```
+This section presents data on our four indicators of interest summarized across time and space for tod and non-tod areas. 
 
-# Groupped Bar Plots
+## Charts
 
-```{r groupped_bar_plot}
+The charts below show the annual income, monthly rent, percent of workers commuting to work on public transit, and the percent of workers working public administration. For all indicators, the charts display the average value for census tracts in the TOD and the average value for census tracts in the Non-TOD areas in 2009 and 2017. Notably, the mean rent in TOD and non-TOD areas was similar in 2009. By 2017, the difference in rent between TOD and non-TOD had increased dramatically. The same patterns have also occurred when looking at annual income, with the gap in income between TOD and non-TOD areas increasing between 2009 and 2017.
+
+```{r bar_plot, message=FALSE, warning=FALSE}
 census_data_summary <- 
   st_drop_geometry(all_census_data) %>%
   group_by(year, type) %>%
-  summarize(median_income = mean(median_income, na.rm = T),
-            median_rent = mean(median_rent, na.rm = T),
-            percent_transit = mean(pct_transit, na.rm = T),
-            percent_public = mean(pct_public, na.rm = T))
+  summarize(median_income = round(mean(median_income, na.rm = T),2),
+            median_rent = round(mean(median_rent, na.rm = T),2),
+            percent_transit = round(mean(pct_transit, na.rm = T),0),
+            percent_public = round(mean(pct_public, na.rm = T),0))
 
 census_data_summary %>%
   gather(Variable, Value, -year, -type) %>%
   ggplot(aes(year, Value, fill = type)) +
   geom_bar(stat = "identity", position = "dodge") +
-  facet_wrap(~Variable, scales = "free", ncol=5) +
+  facet_wrap(~Variable, scales = "free_y", ncol=4, strip.position = 'left',
+             labeller = as_labeller(c(median_income = 'Mean Annual Income (USD)',median_rent = 'Mean Monthly Rent (USD)',percent_transit='% Commuting on Public Transit',percent_public='% of Workers in Public Admin.'))) +
   scale_fill_manual(values = c("#bae4bc", "#0868ac")) +
   labs(title = "Indicator differences across time and space") +
-  plotTheme() + theme(legend.position="bottom")
-
+  plotTheme() + theme(legend.position="bottom")+
+  ylab(NULL) +
+  xlab('Year')+
+  scale_y_continuous(labels = function(x) format(x, big.mark = ",",scientific = FALSE))+
+  theme(strip.background = element_blank(),
+           strip.placement = "outside")
 ```
 
-# Kable Table
+## Table
+
+Both rent and income have increased sharply in TOD areas from 2009 and 2017. As shown in the table below the difference in mean income between TOD and non-TOD areas was only 1,548 USD in 2009 - by 2017 the difference had increased to 16,085 USD, indicating an increase of over **900%**. Similar trends are present for rent where the difference in monthly rent between TOD and non-TOD areas in 2009 was only 58 USD. By 2017 the difference had increased to 252 USD, an increase of **334%**. 
 
 ```{r kable_table}
-kable(census_data_summary) %>%
-  kable_styling() %>%
-  footnote(general_title = "\n",
-           general = "Table 1.0")
+census_data_summary %>%
+kable(booktabs = TRUE,col.name = c('Year','Type','Mean Income (USD)','Mean Rent (USD)','Mean % Commuting on Transit','Mean % Public Workers'), align='c') %>%
+  kable_styling()
 ```
 
 
@@ -269,16 +341,13 @@ kable(census_data_summary) %>%
 
 ## Population Analysis
 
-```{r population_analysis}
 
-half_mile_buffer <- st_buffer(dcmetro, 2640) #Get half mile buffer
-
-centroids <- st_centroid(all_census_data) #Get centroids of all census tracts
+```{r population_analysis, warning=FALSE,message=FALSE}
 
 #Spatially join centroid of census tracts to buffers around metro stops and sum total population within 1/2 milf of buffer
 
-metro_pop <- st_join(half_mile_buffer,centroids %>% dplyr::select(GEOID,year,total_pop,median_rent)) %>%  
-  group_by(NAME,year) %>% summarize(pop = sum(total_pop),rent=mean(median_rent, na.rm=TRUE)) %>%
+metro_pop <- st_join(metro_buffer,centroids %>% dplyr::select(GEOID,year,total_pop,median_rent)) %>%  
+  group_by(NAME,year) %>% summarize(Population = sum(total_pop),Rent=mean(median_rent, na.rm=TRUE)) %>%
   st_drop_geometry() 
 
 dcmetro <- inner_join(dcmetro,metro_pop,by='NAME')
@@ -286,58 +355,85 @@ dcmetro <- inner_join(dcmetro,metro_pop,by='NAME')
 
 ## Make Population Map
 
-```{r make_pop_map}
+The map below shows the population living in the TOD area surrounding each metro stop - a larger bubble indicates a larger population living in the census tracts which form the TOD area surrounding the metro stop. The population living near metro stops is high in the urban downtown core of the city where large apartment buildings that house more people tend to dominate the housing landscape. In areas on the periphery of the city single family homes tend to be the main form of housing - as a result fewer residents live within the TOD at the edges of the city. 
+
+The areas surrounding metro stops have experienced population growth in many parts of Washington DC. This growth is most notable around the U street, Shaw, and Columbia Heights metro stops on the green line and is likely a result of new apartment buildings being developed around metro stops as part of a TOD development strategy. 
+
+```{r make_pop_bubble_map, warning=FALSE,message=FALSE}
 
 ggplot()+
-  geom_sf(data = all_census_data)+
-  geom_sf(data = dcmetro, color='blue', aes(size=pop))+
+  geom_sf(data = all_census_data,linewidth=0.3,color='#bcbcbc',fill='#eaeaea')+
+  geom_sf(data = dcwater,fill='#5ee4ff',color=NA)+
   geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=0.5)+
-  scale_size(range = c(0.1, 3))+
+  geom_sf(data = dcmetro, color='blue', aes(size=Population))+
+  ggtitle("Population Living in Within Half Mile of Metro Stop")+
+  scale_size(range = c(0.1, 4))+
+  scale_fill_manual(name='Population')+
   mapTheme()+
   facet_wrap(~year)
 ```
 
 ## Make Rent Map
 
-```{r make_rent_map}
+The increase in population around the Columbia Heights, Petworth, U Street, and Shaw metro stops has been accompanied by a dramatic increase in rent. Rent in the census tract around the Shaw metro stop doubled from 2009 to 2017. Similar trends are present in the TOD surrounding other metro stop such as Brookland, Fort Totten, and Petworth which experienced rent increases of 41%, 81% and 58%. Rent in TOD areas East Of Anacostia river have also increases, but by much smaller percentages. Rent in census tracts bordering the Congress Heights metro stop increased by just 7% while rent in census tracts around the Anacostia metro stop increased by 20%.
+
+```{r make_rent_bubble_map, warning=FALSE,message=FALSE}
 
 ggplot()+
-  geom_sf(data = all_census_data)+
-  geom_sf(data = dcmetro, color='blue', aes(size=rent))+
+  geom_sf(data = all_census_data,linewidth=0.3,color='#bcbcbc',fill='#eaeaea')+
+  geom_sf(data = dcwater,fill='#5ee4ff',color=NA)+
   geom_sf(data = tod_dissolve,fill='transparent',color='red',linewidth=0.5)+
-  scale_size(range = c(0.01, 4))+
+  geom_sf(data = dcmetro, color='blue', aes(size=Rent))+
+  ggtitle("Median Rent Within a Half Mile of Metro Stop")+
+  scale_size(range = c(0.01, 3))+
   mapTheme()+
   facet_wrap(~year)
 ```
 
 # Multi Ring Buffer Analysis
 
+This chart below shows the mean monthly rent by census tract based on the tracts distance to the nearest metro stop. Looking at the pattern of 2017 line we can observe that census tracts located closer to the metro have a higher mean rent. The point which breaks this pattern is the data point for census tracts located 2.01 - 2.50miles from the metro - this is because this group of tracts includes several census tracts in Northwest DC which have very high rent levels, these high rents pre-date the construction of metro. If we compare the 2009 line to the 2017 line we can again observe a widening of the difference in rent between between areas near the metro and those far away from metro.
 
-```{r make_rent_map}
-allTracts_17 <- rbind(non_tod2017,tod2017)
-allTracts_09 <- rbind(non_tod2009, tod2009)
+```{r multi_ring_buffer, warning=FALSE, message=FALSE}
+allTracts_17 <- all_census_data %>% filter(year == 2017)
+allTracts_09 <- all_census_data %>% filter(year == 2009)
 
-MRB <- multipleRingBuffer(st_union(dcmetro), 27000, 1800)
+MRB <- multipleRingBuffer(st_union(dcmetro), 2640*10, 2640)
 
 rings_17 <- st_join(st_centroid(allTracts_17), MRB, join = st_intersects) %>% 
-            st_drop_geometry() %>%           
+            st_drop_geometry() %>%
+            select('GEOID','distance') %>%
             left_join(allTracts_17, by = "GEOID") %>%   
-            mutate(distance_miles = distance / 5240) %>%            
+            mutate(distance_miles = distance / 5280) %>%            
             st_sf()
 
 rings_09 <- st_join(st_centroid(allTracts_09), MRB, join = st_intersects) %>%  
-            st_drop_geometry() %>%          
+            st_drop_geometry() %>%
+            select('GEOID','distance') %>%
             left_join(allTracts_09, by = "GEOID") %>%            
-            mutate(distance_miles = distance / 5240) %>%
+            mutate(distance_miles = distance / 5280) %>%
             st_sf()
 
-rings <- rbind(rings_17, rings_09)
+rings <- rbind(rings_17, rings_09) 
+rings <- dplyr::filter(rings, distance_miles != 3.5)
 
-ggplot()+  
-         geom_sf(data = rings, aes(fill = distance_miles)) + 
-         geom_sf(data = dcmetro, color = "white")  + 
-         scale_fill_viridis_c() +mapTheme()
-
-ggplot() +   
-         geom_line(data = rings, aes(x = distance_miles, y = median_rent.x, color = year.y), stat = "summary", fun = mean) #add line tod vs non tod and how many houses there are tod vs non tod
+ggplot() +
+  #add line tod vs non tod and how many houses there are tod vs non tod
+  geom_line(data = rings, aes(x = distance_miles, y = median_rent, color = year), stat = "summary", fun = mean,linewidth=1.8)+
+  geom_point(data = rings, aes(x= distance_miles, y= median_rent, color= year), stat = "summary", fun = mean, size=4)+
+  ylim(0,2000)+
+  xlim(0.5,2.5)+
+  ggtitle('Rent as a function of distance to metro stops')+
+  scale_x_continuous(breaks = c(0.5,1,1.5,2,2.5),
+    labels = paste0(c("0m-0.5m", "0.51m - 1.0m", "1.01m - 1.50m", "1.51m - 2.00m", "2.01m - 2.50m")))+
+  xlab('Distance in miles')+
+  ylab('Mean Monthly rent (USD)')+
+  theme(panel.grid.minor= element_blank(),panel.grid.major.x= element_blank())
+        
 ```
+
+# Conclusion
+
+The analysis above highlights the impact that Transit Oriented Development strategies have had on the Washington DC landscape. From 2009 to 2017, there has been a rapid increase in the construction of new apartment buildings around many metro stops in Washington DC. This pattern of new construction near metro stops has been most prominent around the Petworth, Shaw, Columbia Heights, Brookland, and U-Street metro stops. This new construction has occurred alongside rapidly rising rents and an increase in the mean income levels of residents living in the TOD area. Areas in the TOD provide easy access to downtown offices and residents living in the TOD area are more likely to commute to work on public transit. Neighborhoods located in the TOD are popular with middle class residents such as public administration workers and provide residents with housing that is cheaper relative to prices in downtown Washington DC which has some of the highest rent levels in the city.  
+
+A notable exception to the trend is of rising rent prices in the TOD is in the section of the TOD area which is located east of the Anacasotia. In this portion of the TOD-area census tracts have experienced minimal changes in rent from 2009 to 2017 despite large increases in other sections of the TOD. The neighborhoods east of the Anacostia are dominated by African american residents and the annual income in census tracts east of the Anacostia are the lowest in the city. Prior to 2017, the development of new apartments around metro stops has taken place mostly west of the Anacostia river. However, there are currently several new projects planned east of the Anacostia, including a [134 unit apartment complex at 1234 Good Hope Road](https://www.bisnow.com/washington-dc/news/multifamily/dc-selects-development-team-to-build-134-unit-anacostia-project-117848) which is located near the Ancostia metro. As new construction expands across the river, it will be important for developers and city counsel to try to keep rent prices similar to current level. If rent east of the Anacostia increases rapidly like it did in other areas of the TOD area there is a high risk of long term residents getting displaced. 
