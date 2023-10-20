@@ -11,6 +11,14 @@ knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
 
 library(tidyverse)
 library(sf)
+library(tidycensus)
+library(viridis)
+library(gridExtra)
+library(FNN) #This is needed for KNN Function
+library(spdep) #This is for the Local Morans I calcuations
+library(kableExtra)
+library(spatstat.explore)
+library(classInt)   # for KDE and ML risk class intervals
 
 # functions
 root.dir = "https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/"
@@ -34,7 +42,9 @@ dc_quadrents<- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DAT
   st_transform('ESRI:103376')
 
 dc_water <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Planimetrics_2015/MapServer/14/query?outFields=*&where=1%3D1&f=geojson') %>%
-  st_transform('ESRI:103376')
+  st_transform('ESRI:103376') %>%
+  dplyr::filter(CAPTUREACTION == 'A')
+
 
 ```
 
@@ -73,9 +83,6 @@ ggplot() +
 
 ## Creating a fishnet grid
 
-> What is a fishnet grid?
-
-
 ```{r, make_fishnet}
 
 fishnet <- 
@@ -84,11 +91,11 @@ fishnet <-
                square = TRUE) %>%
   .[dc_quadrents] %>%            # fast way to select intersecting polygons
   st_sf() %>%
-  mutate(uniqueID = 1:n())
+  mutate(uniqueID = 1:n()) %>%
+  st_transform('ESRI:103376')
 ```
 
 ### Aggregate points to the fishnet
-
 
 ```{r, fishnet}
 ## add a value of 1 to each crime, sum them with aggregate
@@ -98,7 +105,8 @@ theft_net <- st_join(thefts2021,fishnet) %>%
   group_by(uniqueID) %>% tally() %>%
   rename(theft_count = n) %>%
   left_join(fishnet,.,by = "uniqueID") %>%
-  mutate(theft_count = ifelse(is.na(theft_count),0,theft_count))
+  mutate(theft_count = ifelse(is.na(theft_count),0,theft_count),
+         cvID = sample(round(nrow(fishnet) / 24), size=nrow(fishnet), replace = TRUE))
 
 ggplot()+
   geom_sf(data = theft_net, aes(fill=theft_count), color='transparent')+
@@ -125,70 +133,79 @@ ggplot()+
 
 ```{r}
 ## only pulling a single variable for our model to keep it simple
-## using Socrata again
-abandonCars <- 
-  read.socrata("https://data.cityofchicago.org/Service-Requests/311-Service-Requests-Abandoned-Vehicles/3c9v-pnva") %>%
-    mutate(year = substr(creation_date,1,4)) %>% filter(year == "2017") %>%
-    dplyr::select(Y = latitude, X = longitude) %>%
-    na.omit() %>%
-    st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant") %>%
-    st_transform(st_crs(fishnet)) %>%
-    mutate(Legend = "Abandoned_Cars")
 
-## Neighborhoods to use in LOOCV in a bit
-neighborhoods <- 
-  st_read("https://raw.githubusercontent.com/blackmad/neighborhoods/master/chicago.geojson") %>%
-  st_transform(st_crs(fishnet)) 
+illegaldumping <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/ServiceRequests/MapServer/12/query?where=SERVICECODEDESCRIPTION%3D%27Illegal+Dumping%27&f=geojson') %>%
+  st_transform('ESRI:103376')
 
-```
+rodents <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/ServiceRequests/MapServer/12/query?where=SERVICECODEDESCRIPTION%3D%27Rodent+Inspection+and+Treatment%27&f=geojson') %>%
+  st_transform('ESRI:103376')
 
-### How we aggregate a feature to our fishnet
-
-This is an important chunk of code with some unfamiliar lines. The overall to assign the fishnet ID to each abandoned car point, group the points by fishnet ID and count them per ID, join that count back to the fishnet and then go from a long format to a wide format. We'll step through it:
-
-*   `st_join(fishnet, join=st_within)`
-
-*       spatially join `abandonCars` points to the `fishnet` polygon they are within by specifying `st_within`. This results in the `Abandoned_Cars` points being given the `uniqueID` of the fishnet grid cell that they are within.
-
-*   `st_drop_geometry()`
-*       drop the geometry attributes of the joined data so that we can do summaries on it without having to also calculate geometries which would be quite slow.
-
-*   `group_by(uniqueID, Legend)`
-*       we want to count the number of abandoned cars per fishnet, so we use `group_by` on the unique cell ID. We also include the `Legend` column, which is more useful if you are doing this one more than a single layer.
-
-*   `summarize(count = n())`
-*       use `summarize` to create a new field called `count` that will be the count of all abandoned cars per fishnet grid cell. The `n()` function returns the number within each group (i.e. `uniqueID`)
-
-*   `left_join(fishnet, ., by = "uniqueID")`
-*       join that summary back to spatial fishnet by the `uniqueID` field which is in both. Note the use of the `.` "dot operator" which is a stand in for the object being piped into the function (i.e. `left_join()`). We use this because we want the summaries to be the second argument of the join; not the first argument which is the dplyr default.
-
-*   `spread(Legend, count, fill=0)`
-*       "spread" from long to wide format and make a new column for each value of the `Legend` field. This also is more useful if there are multiple layers in the `Legend` column. Note the use of `fill=0` tells the function to fill in any fishnet cells without an abandoned car with a `0` instead of `NA`.
-
-*   `dplyr::select(-``<NA>``)`
-*       remove a `<NA>` column that was created because of the `NA` value in the `Legend` column when it was "spread"
-
-*   `ungroup()`
-*       Finally, ungroup the dataframe.
-
-```{r}
-
-vars_net <- abandonCars %>%
+net1 <- illegaldumping %>%
   st_join(fishnet, join=st_within) %>%
   st_drop_geometry() %>%
-  group_by(uniqueID, Legend) %>%
+  group_by(uniqueID) %>%
   summarize(count = n()) %>%
-  left_join(fishnet, ., by = "uniqueID") %>%
-  spread(Legend, count, fill=0) %>%
-  dplyr::select(-`<NA>`) %>%
-  ungroup()
+  rename(illegaldumping_count = count) %>%
+  left_join(theft_net, ., by = "uniqueID") %>%
+  mutate(illegaldumping_count = ifelse(is.na(illegaldumping_count),0,illegaldumping_count))
 
+net1 <- rodents %>%
+  st_join(fishnet, join=st_within) %>%
+  st_drop_geometry() %>%
+  group_by(uniqueID) %>%
+  summarize(count = n()) %>%
+  rename(rodent_count = count) %>%
+  left_join(net1, ., by = "uniqueID") %>%
+  mutate(rodent_count = ifelse(is.na(rodent_count),0,rodent_count))
+
+restaurants <- st_read('https://services.arcgis.com/EDxZDh4HqQ1a9KvA/arcgis/rest/services/cgabris_blueraster_Washington_DC_Layers/FeatureServer/8/query?where=1=1&f=geojson') %>%
+  st_transform('ESRI:103376')
+
+net1 <- restaurants %>%
+  st_join(fishnet, join=st_within) %>%
+  st_drop_geometry() %>%
+  group_by(uniqueID) %>%
+  summarize(count = n()) %>%
+  rename(restaurants_count = count) %>%
+  left_join(net1, ., by = "uniqueID") %>%
+  mutate(restaurants_count = ifelse(is.na(restaurants_count),0,restaurants_count))
 
 ```
 
-## Nearest Neighbor Feature
+## Modeling Spatial Features
 
-> Review: what is NN and what does `k` represent in this function?
+```{r tidycensus}
+
+variables =c('B06010_001E', #Total
+             'B06010_002E', #Total With No Income
+            'B06010_004E', #Estimate!!Total:!!With income:!!$1 to $9,999 or loss
+            'B06010_005E', #Estimate!!Total:!!With income:!!$10,000 to $14,999
+            'B06010_006E', #Estimate!!Total:!!With income:!!$15,000 to $24,999
+            'B06010_007E', #Estimate!!Total:!!With income:!!$25,000 to $34,999
+            'B06010_011E') #Estimate!!Total:!!With income:!!$75,000 or more
+
+dccensus_data <-
+  get_acs('tract',
+          variables = variables,
+          year = 2021,
+          state = 'DC',
+          geometry = TRUE,
+          output = 'wide'
+          ) %>%
+dplyr::select(-ends_with('M')) %>%
+  dplyr::filter(B06010_001E > 1000) %>%
+  mutate(percent_poor = (B06010_004E + B06010_005E + B06010_006E)/B06010_001E,
+         percent_BO = (B06010_011E / B06010_001E),
+         wealth_inequality_index = (percent_poor * percent_BO * 4)) %>%
+  st_transform('ESRI:103376')
+
+net1 <- st_join(st_centroid(fishnet), dccensus_data %>% dplyr::select(wealth_inequality_index)) %>%
+  st_drop_geometry() %>%
+  left_join(net1,.,by="uniqueID") %>%
+  drop_na()
+```
+
+# Nearest Neighbor Feature
 
 ```{r}
 # convinience to reduce length of function names.
@@ -196,35 +213,74 @@ st_c    <- st_coordinates
 st_coid <- st_centroid
 
 ## create NN from abandoned cars
-vars_net <- vars_net %>%
-    mutate(Abandoned_Cars.nn = nn_function(st_c(st_coid(vars_net)), 
-                                           st_c(abandonCars),
-                                           k = 3))
+net1 <- net1 %>%
+    mutate(restaurants.nn = nn_function(st_c(st_coid(net1)), 
+                                           st_c(restaurants),
+                                           k = 3),
+           rodents.nn = nn_function(st_c(st_coid(net1)), 
+                                           st_c(rodents),
+                                           k = 10),
+          illegaldumping.nn = nn_function(st_c(st_coid(net1)), 
+                                           st_c(illegaldumping),
+                                           k = 10)
+           )
 ```
 
-> What changes if we make `k` a different number?
+# Filter out grid squares in water
 
 ```{r}
-## Visualize the NN feature
-vars_net.long.nn <- 
-  dplyr::select(vars_net, ends_with(".nn")) %>%
-    gather(Variable, value, -geometry)
 
-ggplot() +
-      geom_sf(data = vars_net.long.nn, aes(fill=value), colour=NA) +
-      scale_fill_viridis(name="NN Distance") +
-      labs(title="Abandoned Car NN Distance") +
-      mapTheme()
+centroid <- st_centroid(net1)
+
+net1 <- centroid[st_disjoint(centroid,st_union(dc_water)) %>% lengths > 0, ] %>%
+  st_drop_geometry() %>%
+  left_join(.,net1) %>%
+  st_sf() 
+
 ```
 
-## Join NN feature to our fishnet
 
-Since the counts were aggregated to each cell by `uniqueID` we can use that to join the counts to the fishnet.
+```{r make_maps, fig.width=12, fig.height=8}
+## Visualize the Risk Factors
 
-```{r}
-## important to drop the geometry from joining features
-final_net <-
-  left_join(crime_net, st_drop_geometry(vars_net), by="uniqueID") 
+grid.arrange(ncol=3,nrow=3,
+ggplot()+
+  geom_sf(data=net1,aes(fill=illegaldumping_count),color='transparent')+
+  scale_fill_viridis(option="rocket",direction=-1)+
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  mapTheme(),
+ggplot()+
+  geom_sf(data=net1,aes(fill=restaurants_count),color='transparent')+
+  scale_fill_viridis(option="rocket",direction=-1)+
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  mapTheme(),
+ggplot()+
+  geom_sf(data=net1,aes(fill=restaurants.nn),color='transparent')+
+  scale_fill_viridis(option="rocket",direction=-1)+
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  mapTheme(),
+ggplot()+
+  geom_sf(data=net1,aes(fill=wealth_inequality_index),color='transparent')+
+  scale_fill_viridis(option="rocket",direction=-1)+
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  mapTheme(),
+ggplot()+
+  geom_sf(data=net1,aes(fill=rodent_count),color='transparent')+
+  scale_fill_viridis(option="rocket",direction=-1)+
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  mapTheme(),
+ggplot()+
+  geom_sf(data=net1,aes(fill=rodents.nn),color='transparent')+
+  scale_fill_viridis(option="rocket",direction=-1)+
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  mapTheme()
+)
 
 ```
 
@@ -234,32 +290,29 @@ Using spatial joins to join *centroids* of fishnets to polygon for neighborhoods
 
 > What issues arise when we try to join polygons to polygons in space?
 
-```{r}
+```{r join_police_districts_wards}
+
+police_districts <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Public_Safety_WebMercator/MapServer/9/query?outFields=*&where=1%3D1&f=geojson') %>%
+  st_transform('ESRI:103376') %>%
+  rename(police_name = NAME)
+
+neighboorhood <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Administrative_Other_Boundaries_WebMercator/MapServer/17/query?outFields=*&where=1%3D1&f=geojson') %>%
+  st_transform('ESRI:103376') %>%
+  rename(nbh_names = NBH_NAMES)
 
 final_net <-
-  st_centroid(final_net) %>%
-    st_join(dplyr::select(neighborhoods, name), by = "uniqueID") %>%
-    st_join(dplyr::select(policeDistricts, District), by = "uniqueID") %>%
+  st_centroid(fishnet) %>%
+    st_join(dplyr::select(neighboorhood, nbh_names)) %>%
+    st_join(dplyr::select(police_districts, police_name)) %>%
       st_drop_geometry() %>%
-      left_join(dplyr::select(final_net, geometry, uniqueID)) %>%
-      st_sf() %>%
+      left_join(net1,.,by='uniqueID') %>%
   na.omit()
 
-# for live demo
-# mapview::mapview(final_net, zcol = "District")
 ```
 
 ## Local Moran's I for fishnet grid cells
 
-using {spdep} package to to build neighborhood weights and list to calculate local Moran's I.
-
-Note that the code here is *different* than in the book - it has been updated to keep up with changes in packages.
-
-> What is the difference between local and global Moran's I?
-
-A little in depth version of the chunk below can be found:
-
-Mendez C. (2020). Spatial autocorrelation analysis in R. R Studio/RPubs. Available at <https://rpubs.com/quarcs-lab/spatial-autocorrelation>
+We use the {spdep} package to to build neighborhood weights and list to calculate local Moran's I.
 
 ```{r}
 ## generates warnings from PROJ issues
@@ -273,17 +326,17 @@ final_net.weights <- nb2listw(final_net.nb, style="W", zero.policy=TRUE)
 
 ```{r}
 ## see ?localmoran
-local_morans <- localmoran(final_net$Abandoned_Cars, final_net.weights, zero.policy=TRUE) %>% 
+local_morans <- localmoran(final_net$theft_count, final_net.weights, zero.policy=TRUE) %>% 
   as.data.frame()
 
 # join local Moran's I results to fishnet
 final_net.localMorans <- 
   cbind(local_morans, as.data.frame(final_net)) %>% 
   st_sf() %>%
-  dplyr::select(Abandoned_Cars_Count = Abandoned_Cars, 
+  dplyr::select(Theft_count = theft_count, 
                 Local_Morans_I = Ii, 
                 P_Value = `Pr(z != E(Ii))`) %>%
-  mutate(Significant_Hotspots = ifelse(P_Value <= 0.001, 1, 0)) %>%
+  mutate(Significant_Hotspots = ifelse(P_Value <= 0.01, 1, 0)) %>%
   gather(Variable, Value, -geometry)
   
 ```
@@ -306,94 +359,134 @@ for(i in vars){
               aes(fill = Value), colour=NA) +
       scale_fill_viridis(name="") +
       labs(title=i) +
-      mapTheme(title_size = 14) + theme(legend.position="bottom")}
+      mapTheme(title_size = 10) + theme(legend.position="bottom")}
 
-do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Burglary"))
+do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Theft"))
+```
+## Correlation Plots
+
+```{r, correlation_plot, fig.height=9,fig.width=7}
+
+correlation.long <-
+  st_drop_geometry(final_net) %>%
+    dplyr::select(-uniqueID, -cvID, -police_name, -nbh_names) %>%
+    gather(Variable, Value, -theft_count)
+
+correlation.cor <-
+  correlation.long %>%
+    group_by(Variable) %>%
+    summarize(correlation = cor(Value, theft_count, use = "complete.obs"))
+    
+ggplot(correlation.long, aes(Value, theft_count)) +
+  geom_point(size = 0.1) +
+  geom_text(data = correlation.cor, aes(label = paste("r =", round(correlation, 2))),
+            x=-Inf, y=Inf, vjust = 1.5, hjust = -.1) +
+  geom_smooth(method = "lm", se = FALSE, colour = "black") +
+  facet_wrap(~Variable, ncol = 2, scales = "free") +
+  labs(title = "Theft count as a function of risk factors") +
+  plotTheme()
 ```
 
-## Distance to Hot spot
+```{r, dependant_variable_hist, fig.height}
 
-Using NN distance to a hot spot location
+ggplot()+
+  geom_histogram(data=final_net,aes(x=theft_count),fill='grey60',color='black',bins=100)+
+  plotTheme()
 
-```{r}
-# generates warning from NN
-final_net <- final_net %>% 
-  mutate(abandoned.isSig = 
-           ifelse(local_morans[,5] <= 0.001, 1, 0)) %>%
-  mutate(abandoned.isSig.dist = 
-           nn_function(st_c(st_coid(final_net)),
-                       st_c(st_coid(filter(final_net, 
-                                           abandoned.isSig == 1))), 
-                       k = 1))
-
-## What does k = 1 represent?
 ```
 
-> What does `k = 1` above mean in terms of measuring nearest neighbors?
 
-### Plot NN distance to hot spot
-
-```{r}
-ggplot() +
-      geom_sf(data = final_net, aes(fill=abandoned.isSig.dist), colour=NA) +
-      scale_fill_viridis(name="NN Distance") +
-      labs(title="Abandoned Car NN Distance") +
-      mapTheme()
-```
-
-## Modeling and CV
-
-OK - this is a tricky bit.
-
-Our model is actually made inside this custom function from the book called `crossValidate` that is designed to work with spatial data. 
-
-What it does is take a `dataset`, a dependent variable `dependentVariable`, a list of independent variables `indVariables` (we feed it a list called `reg.ss.vars` here) an `id` - which is a cross validation category. It both runs a poisson model AND does a cross-validation process where it trains and tests the model on geographic holdout sets. It returns an sf object, in this case called `reg.ss.spatialCV`. 
-
-If you want to see how it works, run the code `View(crossValidate)` to see the code behind the function.
-
-Leave One Group Out CV on spatial features
-
-```{r results='hide'}
+```{r crossvalidation, results='hide'}
 
 # View(crossValidate)
 
 ## define the variables we want
-reg.ss.vars <- c("Abandoned_Cars.nn", "abandoned.isSig.dist")
+reg.vars <- c("illegaldumping.nn", "restaurants.nn","rodents.nn","wealth_inequality_index")
 
 ## RUN REGRESSIONS
-reg.ss.spatialCV <- crossValidate(
+reg.spatialCV <- crossValidate(
   dataset = final_net,
-  id = "name",                           
-  dependentVariable = "countBurglaries",
-  indVariables = reg.ss.vars) %>%
-    dplyr::select(cvID = name, countBurglaries, Prediction, geometry)
+  id = "nbh_names",                           
+  dependentVariable = "theft_count",
+  indVariables = reg.vars) %>%
+    dplyr::select(cvID = nbh_names, theft_count, Prediction, geometry)
+
+reg.CV <- crossValidate(
+  dataset = final_net,
+  id = "cvID",                           
+  dependentVariable = "theft_count",
+  indVariables = reg.vars) %>%
+    dplyr::select(cvID = cvID, theft_count, Prediction, geometry)
+
+reg.summary <- 
+  rbind(mutate(reg.spatialCV,Error = Prediction - theft_count,
+               Regression = "Spatial Location CV"),
+        mutate(reg.CV, Error = Prediction - theft_count,
+               Regression = "Random k-fold CV"))
 ```
 
 ### Calculating Errors across space
 
 ```{r}
-# calculate errors by NEIGHBORHOOD
 error_by_reg_and_fold <- 
-  reg.ss.spatialCV %>%
-    group_by(cvID) %>% 
-    summarize(Mean_Error = mean(Prediction - countBurglaries, na.rm = T),
+  reg.summary %>%
+    group_by(Regression, cvID) %>% 
+    summarize(Mean_Error = mean(Prediction - theft_count, na.rm = T),
               MAE = mean(abs(Mean_Error), na.rm = T),
               SD_MAE = mean(abs(Mean_Error), na.rm = T)) %>%
   ungroup()
 
-error_by_reg_and_fold %>% 
-  arrange(desc(MAE))
-error_by_reg_and_fold %>% 
-  arrange(MAE)
-
-## plot histogram of OOF (out of fold) errors
 error_by_reg_and_fold %>%
-  ggplot(aes(MAE)) + 
-    geom_histogram(bins = 30, colour="black", fill = "#FDE725FF") +
-  scale_x_continuous(breaks = seq(0, 11, by = 1)) + 
-    labs(title="Distribution of MAE", subtitle = "LOGO-CV",
-         x="Mean Absolute Error", y="Count") 
+  ggplot() +
+    geom_sf(aes(fill = MAE)) +
+    facet_wrap(~Regression) +
+    scale_fill_viridis() +
+    labs(title = "Theft errors by Regression") +
+    mapTheme() + theme(legend.position="bottom")
 ```
+
+
+``` {r}
+st_drop_geometry(reg.summary) %>%
+  group_by(Regression) %>% 
+  mutate(abs_error = abs(Error)) %>%
+    summarize(Mean_MAE = round(mean(abs(abs_error)), 2),
+              SD_MAE = round(sd(abs(abs_error), 2))) %>%
+  kable() %>%
+  kable_classic()
+```
+
+## Racial Analysis
+
+``` {r}
+tracts20 <- 
+  get_acs(geography = "tract", variables = c("B01001_001E","B01001A_001E"), 
+          year = 2020, state='DC', geometry=T) %>%
+  st_transform('ESRI:103376')  %>% 
+  dplyr::select(variable, estimate, GEOID) %>%
+  spread(variable, estimate) %>%
+  rename(TotalPop = B01001_001,
+         NumberWhites = B01001A_001) %>%
+  mutate(percentWhite = NumberWhites / TotalPop,
+         raceContext = ifelse(percentWhite > .5, "Majority_White", "Majority_Non_White"))
+
+ggplot()+
+  geom_sf(data=tracts20, aes(fill=raceContext))
+```
+
+``` {r}
+reg.summary %>% 
+    st_centroid() %>%
+    st_join(tracts20) %>%
+    na.omit() %>%
+      st_drop_geometry() %>%
+      group_by(Regression, raceContext) %>%
+      summarize(mean.Error = mean(Error, na.rm = T)) %>%
+      spread(raceContext, mean.Error) %>%
+      kable(caption = "Mean Error by neighborhood racial context") %>%
+        kable_styling("striped", full_width = F)  
+```
+
 
 ## Density vs predictions
 
@@ -401,69 +494,23 @@ The `spatstat.explore` package's `density.ppp` function gets us kernel density e
 
 Note that the code here is *different* than in the book - it has been updated to keep up with changes in packages.
 
-```{r}
-# demo of kernel width
-burg_ppp <- as.ppp(st_coordinates(burglaries), W = st_bbox(final_net))
-burg_KD.1000 <- spatstat.explore::density.ppp(burg_ppp, 1000)
-burg_KD.1500 <- spatstat.explore::density.ppp(burg_ppp, 1500)
-burg_KD.2000 <- spatstat.explore::density.ppp(burg_ppp, 2000)
-burg_KD.df <- rbind(
-  mutate(data.frame(rasterToPoints(mask(raster(burg_KD.1000), as(neighborhoods, 'Spatial')))), Legend = "1000 Ft."),
-  mutate(data.frame(rasterToPoints(mask(raster(burg_KD.1500), as(neighborhoods, 'Spatial')))), Legend = "1500 Ft."),
-  mutate(data.frame(rasterToPoints(mask(raster(burg_KD.2000), as(neighborhoods, 'Spatial')))), Legend = "2000 Ft.")) 
-
-burg_KD.df$Legend <- factor(burg_KD.df$Legend, levels = c("1000 Ft.", "1500 Ft.", "2000 Ft."))
-
-ggplot(data=burg_KD.df, aes(x=x, y=y)) +
-  geom_raster(aes(fill=layer)) + 
-  facet_wrap(~Legend) +
-  coord_sf(crs=st_crs(final_net)) + 
-  scale_fill_viridis(name="Density") +
-  labs(title = "Kernel density with 3 different search radii") +
-  mapTheme(title_size = 14)
+```{r read_theft_data, warning=False, message=False}
+thefts2022<- 
+  st_read("https://maps2.dcgis.dc.gov/dcgis/rest/services/FEEDS/MPD/MapServer/4/query?outFields=*&where=1%3D1&f=geojson") %>%
+  st_transform('ESRI:103376') %>%
+  filter(OFFENSE == 'THEFT/OTHER')
 ```
 
-```{r}
+```{r kernel_density}
+theft_ppp <- as.ppp(st_coordinates(thefts2021), W = st_bbox(final_net))
+theft.1000 <- spatstat.explore::density.ppp(theft_ppp, 1000)
 
-as.data.frame(burg_KD.1000) %>%
-  st_as_sf(coords = c("x", "y"), crs = st_crs(final_net)) %>%
-  aggregate(., final_net, mean) %>%
-   ggplot() +
-     geom_sf(aes(fill=value)) +
-     geom_sf(data = sample_n(burglaries, 1500), size = .5) +
-     scale_fill_viridis(name = "Density") +
-     labs(title = "Kernel density of 2017 burglaries") +
-     mapTheme(title_size = 14)
-```
-
-## Get 2018 crime data
-
-Let's see how our model performed relative to KD on the following year's data.
-
-```{r}
-burglaries18 <- 
-  read.socrata("https://data.cityofchicago.org/Public-Safety/Crimes-2018/3i3m-jwuy") %>% 
-  filter(Primary.Type == "BURGLARY" & 
-         Description == "FORCIBLE ENTRY") %>%
-  mutate(x = gsub("[()]", "", Location)) %>%
-  separate(x,into= c("Y","X"), sep=",") %>%
-  mutate(X = as.numeric(X),
-         Y = as.numeric(Y)) %>% 
-  na.omit %>%
-  st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant") %>%
-  st_transform('ESRI:102271') %>% 
-  distinct() %>%
-  .[fishnet,]
-```
-
-```{r}
-
-burg_KDE_sum <- as.data.frame(burg_KD.1000) %>%
+theft_KDE_sum <- as.data.frame(theft.1000) %>%
   st_as_sf(coords = c("x", "y"), crs = st_crs(final_net)) %>%
   aggregate(., final_net, mean) 
-kde_breaks <- classIntervals(burg_KDE_sum$value, 
+kde_breaks <- classIntervals(theft_KDE_sum$value, 
                              n = 5, "fisher")
-burg_KDE_sf <- burg_KDE_sum %>%
+theft_KDE_sf <- theft_KDE_sum %>%
   mutate(label = "Kernel Density",
          Risk_Category = classInt::findCols(kde_breaks),
          Risk_Category = case_when(
@@ -474,18 +521,16 @@ burg_KDE_sf <- burg_KDE_sum %>%
            Risk_Category == 1 ~ "1st")) %>%
   cbind(
     aggregate(
-      dplyr::select(burglaries18) %>% mutate(burgCount = 1), ., sum) %>%
-    mutate(burgCount = replace_na(burgCount, 0))) %>%
-  dplyr::select(label, Risk_Category, burgCount)
+      dplyr::select(thefts2022) %>% mutate(theftcount = 1), ., sum) %>%
+    mutate(theftcount = replace_na(theftcount, 0))) %>%
+  dplyr::select(label, Risk_Category, theftcount)
 ```
 
-Note that this is different from the book, where we pull a model out of a list of models we've created. For your homework, you'll be creating multiple models.
-
 ```{r}
-ml_breaks <- classIntervals(reg.ss.spatialCV$Prediction, 
+ml_breaks <- classIntervals(reg.spatialCV$Prediction, 
                              n = 5, "fisher")
-burg_risk_sf <-
-  reg.ss.spatialCV %>%
+theft_risk_sf <-
+  reg.spatialCV %>%
   mutate(label = "Risk Predictions",
          Risk_Category =classInt::findCols(ml_breaks),
          Risk_Category = case_when(
@@ -496,42 +541,40 @@ burg_risk_sf <-
            Risk_Category == 1 ~ "1st")) %>%
   cbind(
     aggregate(
-      dplyr::select(burglaries18) %>% mutate(burgCount = 1), ., sum) %>%
-      mutate(burgCount = replace_na(burgCount, 0))) %>%
-  dplyr::select(label,Risk_Category, burgCount)
+      dplyr::select(thefts2022) %>% mutate(theftcount = 1), ., sum) %>%
+      mutate(theftcount = replace_na(theftcount, 0))) %>%
+  dplyr::select(label,Risk_Category, theftcount)
 ```
 
-We don't do quite as well because we don't have very many features, but still pretty good.
-
 ```{r}
-rbind(burg_KDE_sf, burg_risk_sf) %>%
-  na.omit() %>%
+rbind(theft_KDE_sf, theft_risk_sf) %>%
   gather(Variable, Value, -label, -Risk_Category, -geometry) %>%
   ggplot() +
     geom_sf(aes(fill = Risk_Category), colour = NA) +
-    geom_sf(data = sample_n(burglaries18, 3000), size = .5, colour = "black") +
+    geom_sf(data = thefts2022, size = .1, colour = "grey50") +
     facet_wrap(~label, ) +
-    scale_fill_viridis(discrete = TRUE) +
+    scale_fill_viridis_d(option="rocket",direction=-1) +
     labs(title="Comparison of Kernel Density and Risk Predictions",
-         subtitle="2017 burglar risk predictions; 2018 burglaries") +
+         subtitle="2021 theft risk predictions; 2022 burglaries") +
     mapTheme(title_size = 14)
 ```
 
+
 ```{r}
-rbind(burg_KDE_sf, burg_risk_sf) %>%
+rbind(theft_KDE_sf, theft_risk_sf) %>%
   st_drop_geometry() %>%
   na.omit() %>%
   gather(Variable, Value, -label, -Risk_Category) %>%
   group_by(label, Risk_Category) %>%
-  summarize(countBurglaries = sum(Value)) %>%
+  summarize(theftcount = sum(Value)) %>%
   ungroup() %>%
   group_by(label) %>%
-  mutate(Pcnt_of_test_set_crimes = countBurglaries / sum(countBurglaries)) %>%
+  mutate(Pcnt_of_test_set_crimes = theftcount / sum(theftcount)) %>%
     ggplot(aes(Risk_Category,Pcnt_of_test_set_crimes)) +
       geom_bar(aes(fill=label), position="dodge", stat="identity") +
       scale_fill_viridis(discrete = TRUE, name = "Model") +
-      labs(title = "Risk prediction vs. Kernel density, 2018 burglaries",
-           y = "% of Test Set Burglaries (per model)",
+      labs(title = "Risk prediction vs. Kernel density, 2022 theft",
+           y = "% of  Test Set Thefts Per Model (per model)",
            x = "Risk Category") +
   theme_bw() +
       theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
