@@ -1,13 +1,25 @@
 ---
 title: 'Home Work 3 Predictive Policing'
-author: "Richard"
+author: "Richard Barad"
 date: "10/23/2023"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    number_sections: yes    
+editor_options: 
+  markdown: 
+    wrap: 72
 ---
 
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
+# Import Libraries
+
+```{r import_libraries, warning=FALSE, message=FALSE}
 
 library(tidyverse)
 library(sf)
@@ -26,13 +38,9 @@ source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-L
 
 ```
 
-## Read in Data from DC
+# Import Data
 
-This uses the Socrata package for some data sets.
-
-Note where we bring in burglary data - you will want to vary this part to do your homework!
-
-```{r read_theft_data, warning=False, message=False}
+```{r read_theft_data2021, results='hide'}
 thefts2021<- 
   st_read("https://maps2.dcgis.dc.gov/dcgis/rest/services/FEEDS/MPD/MapServer/3/query?outFields=*&where=1%3D1&f=geojson") %>%
   st_transform('ESRI:103376') %>%
@@ -44,26 +52,26 @@ dc_quadrents<- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DAT
 dc_water <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Planimetrics_2015/MapServer/14/query?outFields=*&where=1%3D1&f=geojson') %>%
   st_transform('ESRI:103376') %>%
   dplyr::filter(CAPTUREACTION == 'A')
-
-
 ```
 
-## visualizing point data
+# Introduction
 
-Plotting point data and density
+In this analysis we try to develop a predicative model which can be use to determine areas of Washington DC where there is a high likelihood of petty theft. We use data available from Washington DC's open data portal and consider all crime events which are included in the category 'THEFT/OTHER'. This is a catch all category for other types of property crime, and specifically excludes burglaries, auto-thefts, and theft of property inside a vehicle. The Theft Other category includes events like pick-pocketing, package theft, mail theft, bike thefts, and shop lifting. The results can help improve resident awareness of locations where the risk of theft is high and can also help police officers and private security know what geographic areas have a high risk of petty theft. 
 
-> How do we analyze point data?
+# Visualizing point data
 
-> Are there other geometries useful to represent point locations?
+The maps below show the location of all reported theft events in Washington in 2021. It is important to keep in mind that this data only includes reported theft events. It is likely that many theft events, are not reported to the Washington police department. We assume there is likely bias in the reporting of theft events and residents are more likely to report the theft of high value property while low value property items which can easily be replaced are less likely to be reported to the police department. Additionally, theft events may be under reported in low income, majority black neighborhoods due to a lack of trust for police in these neighborhoods.
 
-```{r make_maps, fig.width=6, fig.height=4}
+Based on the maps, we can see that neighborhoods near downtown DC tend to have a greater number of theft events. Specific neighborhoods where there is a high rate of theft include Chinatown, Capital Hill, U-street Corridor, and Shaw Neighborhoods. 
+
+```{r make_maps_points, fig.width=6, fig.height=4}
 # uses grid.arrange to organize independent plots
 grid.arrange(ncol=2,
 ggplot() + 
   geom_sf(data = dc_quadrents, fill = "white",color='transparent') +
   geom_sf(data=dc_water,fill='lightblue',color='transparent')+
-  geom_sf(data = thefts2021, colour="orange", size=0.1, show.legend = "point") +
-  labs(title= "Thefts (Non Auto), Washington DC, 2023") +
+  geom_sf(data = thefts2021, colour="orange", size=0.01, show.legend = "point") +
+  labs(title= "Thefts, Washington DC, 2021") +
   geom_sf(data = dc_quadrents, fill='transparent',color='grey10') +
   mapTheme(title_size = 14),
 
@@ -75,13 +83,13 @@ ggplot() +
   scale_fill_gradient(low = "yellow", high = "red")+
   scale_alpha(range = c(0.00, 0.95), guide = FALSE) +
   geom_sf(data=dc_water,fill='lightblue',color='transparent') +
-  labs(title = "Density of Non Auto Thefts") +
+  labs(title = "Density of Thefts") +
   geom_sf(data = dc_quadrents, fill='transparent',color='grey10') +
   mapTheme(title_size = 14) + theme(legend.position = "none")
 )
 ```
 
-## Creating a fishnet grid
+# Creating a fishnet grid
 
 ```{r, make_fishnet}
 
@@ -95,7 +103,7 @@ fishnet <-
   st_transform('ESRI:103376')
 ```
 
-### Aggregate points to the fishnet
+For this analysis, the city of Washington DC is broken into 1,216 equally sized grid squares and the count of the number of theft events which occur in each grid square is calculated. Each grid square has a height and width of 1/4 mile and thus has an area of 0.0625 square miles or 1,742,400 square feet. In the map below we can observe that the grid squares with the highest number of reported thefts tend to cluster near downtown Washington DC. Areas located on the periphery of the city tend to have a lower number of reported theft events. 
 
 ```{r, fishnet}
 ## add a value of 1 to each crime, sum them with aggregate
@@ -115,24 +123,30 @@ ggplot()+
   geom_sf(data = dc_quadrents, fill='transparent',color='grey10') +
   mapTheme()
 
-
-# For demo. requires updated mapview package
-# xx <- mapview::mapview(crime_net, zcol = "countBurglaries")
-# yy <- mapview::mapview(mutate(burglaries, ID = seq(1:n())))
-# xx + yy
 ```
 
+# Modeling Spatial Features
 
-## Modeling Spatial Features
+Next, predictive variables are identified, these variables will be used in our model to help predict areas which will likely have a high rate of future petty theft events. It is hypothesized that petty theft events likely occur in neighborhoods which meet some of the following criteria.
 
-> What features would be helpful in predicting the location of burglaries?
->
-> What might these features be problematic?
->
-> hint: for all the reasons we learned in class
+1. Heavily trafficked areas
+2. Areas with a mix of residential and retail establishment
+3. Neighborhoods which are dirty and there is a lack of concern for community well being.
+4. Areas with a large amount of wealth inequality
 
-```{r}
-## only pulling a single variable for our model to keep it simple
+Heavily trafficked areas are likely to be more crowded and make it easier for thieves to steal and easily blend in with crowds and other pedestrians. We also make an assumption that pickpockets and package thefts are likely to target areas with a mix of residential and retail establishments, since these areas are also likely to be heavily trafficked areas. It is also hypothesized that neighborhoods which are dirty and unsanitary display a lack of community concern for the neighborhood - we hypothesize that theft events are more likely to occur in such areas. Wealth inequality is also examined, and it is hypothesized that areas with greater wealth inequality might have more petty theft events.
+
+## Import Data
+
+The following datasets are used as proxies for the criteria listed above. For each type of event, the count of the number of events occurring in each grid square is calculated. 
+
+1. *Restaurants:* Restaurants tend to cluster in heavily trafficked areas, areas around restaurants tend to be crowded presenting easier targets for thieves.
+
+2. *Rodents:* 311 Requests for Rodent Inspections and Treatment in 2021 are also incorporated into the model. Rodents tend to cluster is busy, heavily trafficked areas. Additionally, a high concentration of rodents can also indicate a lack of concern for community well being as rodents are likely to be present in neighborhoods with a large amount of trash on the streets. 
+
+3. *Illegal Dumping:* 311 requests events of reported illegal dumping events in 2021 are also integrated into the model. Illegal dumping events indicate a lack of concern for community and neighborhood well being. We hypothesize that citizens who engage in illegal dumping are also likely to engage in theft.
+
+```{r, import_data, warning=FALSE, message=FALSE, results='hide'}
 
 illegaldumping <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/ServiceRequests/MapServer/12/query?where=SERVICECODEDESCRIPTION%3D%27Illegal+Dumping%27&f=geojson') %>%
   st_transform('ESRI:103376')
@@ -172,9 +186,41 @@ net1 <- restaurants %>%
 
 ```
 
-## Modeling Spatial Features
+## Nearest Neighbor Analysis
 
-```{r tidycensus}
+In addition to counting the number of events occurring in each grid square the average distance from the center of each grid square to nearby features is calculated. Specifically, we calculate the average distance to the nearest three restaurants, the nearest 10 311 rodent reports, and the 10 nearest 311 illegal dumping reports. Using distance to the nearest feature allows for consideration of point events which occur near the grid square, but are not located within the grid square.
+
+```{r nearest_neighboor}
+# convinience to reduce length of function names.
+st_c    <- st_coordinates
+st_coid <- st_centroid
+
+## create NN from abandoned cars
+net1 <- net1 %>%
+    mutate(restaurants.nn = nn_function(st_c(st_coid(net1)), 
+                                           st_c(restaurants),
+                                           k = 3),
+           rodents.nn = nn_function(st_c(st_coid(net1)), 
+                                           st_c(rodents),
+                                           k = 10),
+          illegaldumping.nn = nn_function(st_c(st_coid(net1)), 
+                                           st_c(illegaldumping),
+                                           k = 10)
+           )
+```
+
+## Incoprating wealth inequality into analysis
+
+So far, the dependent variables we have focused on capture information for our first three criteria. The missing criteria is wealth inequality. In order to incorporate wealth inequality into the model two other predicators are considered for incopration into the model:
+
+1. *A wealth inequality index* is calculated using data from the 2021 American Community Survery Dataset. For each census tract, the percentage of the census tract population which makes over 75,000 USD and the percentage which makes less than 25,000 are calculated. These two percentages are then multiplied together to get a value which can range from 1% to 25%, this value is then multiple by four to scale it such that values range from 1 to 100. Each grid square is assigned a value based on the average of the three nearest census tracts - this ensures the value assigned to the grid square incorporates wealth inequality of the surrounding areas around the grid square.
+
+2. *Distance to nearest public housing complex*: Public housing complexes tend to house low income populations. There have been increasing reports in local Washington DC media reporting that crime events tend to cluster around public housing complexes. For this reason, the distance to public housing complexes into the model is also considered as a predictor for the theft model. 
+
+
+```{r tidycensus, results='hide', message=FALSE, warning=FALSE}
+
+library(SearchTrees)
 
 variables =c('B06010_001E', #Total
              'B06010_002E', #Total With No Income
@@ -194,41 +240,63 @@ dccensus_data <-
           ) %>%
 dplyr::select(-ends_with('M')) %>%
   dplyr::filter(B06010_001E > 1000) %>%
-  mutate(percent_poor = (B06010_004E + B06010_005E + B06010_006E)/B06010_001E,
+  mutate(percent_poor = (B06010_002E + B06010_004E + B06010_005E + B06010_006E)/B06010_001E,
          percent_BO = (B06010_011E / B06010_001E),
          wealth_inequality_index = (percent_poor * percent_BO * 4)) %>%
   st_transform('ESRI:103376')
 
-net1 <- st_join(st_centroid(fishnet), dccensus_data %>% dplyr::select(wealth_inequality_index)) %>%
-  st_drop_geometry() %>%
-  left_join(net1,.,by="uniqueID") %>%
-  drop_na()
+#Determine the three nearest census tracts to each grid square
+tree <- createTree(st_c(st_centroid(dccensus_data)))
+inds <- knnLookup(tree, newdat=st_c(st_centroid(net1)), k=3)
+
+dccensus_data <- dccensus_data %>% rownames_to_column(var = "index") %>% st_drop_geometry()
+
+#Get the wealth inequality index value of the three nearest census tracts and average together
+
+inds <- as.data.frame(inds) %>%
+  mutate(V1 = as.character(V1),
+         V2 = as.character(V2),
+         V3 = as.character(V3)) %>%
+  left_join(dccensus_data %>% dplyr::select('index','wealth_inequality_index'), by = c("V1" = "index")) %>%
+  rename(wealth_inequality_index1 = wealth_inequality_index) %>%
+  left_join(dccensus_data %>% dplyr::select('index','wealth_inequality_index'), by = c("V2" = "index")) %>%
+  rename(wealth_inequality_index2 = wealth_inequality_index) %>%
+  left_join(dccensus_data %>% dplyr::select('index','wealth_inequality_index'), by = c("V3" = "index")) %>%
+  rename(wealth_inequality_index3 = wealth_inequality_index) %>%
+  mutate(wealth_inquality_av = (wealth_inequality_index1 + wealth_inequality_index2 + wealth_inequality_index3)/3)
+
+net1 <- merge(net1, inds %>% dplyr::select(wealth_inquality_av), by = "row.names")
+
 ```
 
-# Nearest Neighbor Feature
+```{r public_housing, warning=FALSE, message=FALSE, results='hide'}
 
-```{r}
-# convinience to reduce length of function names.
-st_c    <- st_coordinates
-st_coid <- st_centroid
+public_housing <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Public_Service_WebMercator/MapServer/15/query?outFields=*&where=1%3D1&f=geojson') %>% st_transform(('ESRI:103376'))
 
-## create NN from abandoned cars
 net1 <- net1 %>%
-    mutate(restaurants.nn = nn_function(st_c(st_coid(net1)), 
-                                           st_c(restaurants),
-                                           k = 3),
-           rodents.nn = nn_function(st_c(st_coid(net1)), 
-                                           st_c(rodents),
-                                           k = 10),
-          illegaldumping.nn = nn_function(st_c(st_coid(net1)), 
-                                           st_c(illegaldumping),
-                                           k = 10)
-           )
+    mutate(wealth_public_housing.distance = nn_function(st_c(st_coid(net1)), 
+                                           st_c(st_coid(public_housing)),
+                                           k = 1))
+
 ```
 
+
+## Clean Data
+
+Before running our analysis, the grid square data is cleaned to remove the following grid squares:
+
+1. Grid squares which are located outside of the boundary of Washington Dc
+2. Grid squares which overlap primarily with water (i.e: the Potomac river or the tidal basin)
+3. Grid squares which overlap primarily with the National Mall or parks adjacent to the national mall
+
+Additionally, each grid square is assigned to the neighborhood it is located in. We use the [neighborhood clusters layer](https://opendata.dc.gov/datasets/neighborhood-clusters/explore) available from DC Open Data Portal to assign neighborhoods to each grid square. 
+
+```{r cleandata, message=FALSE, warning=FALSE, results='hide'}
 # Filter out grid squares in water
 
-```{r}
+neighboorhood <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Administrative_Other_Boundaries_WebMercator/MapServer/17/query?outFields=*&where=1%3D1&f=geojson') %>%
+  st_transform('ESRI:103376') %>%
+  rename(nbh_names = NBH_NAMES)
 
 centroid <- st_centroid(net1)
 
@@ -237,15 +305,41 @@ net1 <- centroid[st_disjoint(centroid,st_union(dc_water)) %>% lengths > 0, ] %>%
   left_join(.,net1) %>%
   st_sf() 
 
+net1 <- centroid[st_intersects(centroid,st_union(dc_quadrents)) %>% lengths > 0, ] %>%
+  st_drop_geometry() %>%
+  left_join(.,net1) %>%
+  st_sf() 
+
+net1 <- centroid[st_disjoint(centroid,neighboorhood %>% dplyr::filter(nbh_names == 'National Mall, Potomac River')) %>% lengths > 0, ] %>%
+  st_drop_geometry() %>%
+  left_join(.,net1) %>%
+  st_sf() 
+
+final_net <-
+  st_centroid(net1) %>%
+    st_join(dplyr::select(neighboorhood, nbh_names)) %>%
+      st_drop_geometry() %>%
+      inner_join(fishnet,.,by='uniqueID') %>%
+  na.omit()
+
 ```
 
+## Mapping the Predictors
 
-```{r make_maps, fig.width=12, fig.height=8}
+Next, maps of the predictors are explored to try to identify spatial patterns in the predictors. By comparing the maps below with the theft map it is observed that there are some notable spatial similarities between the predictors and theft events. Specifically, areas near restaurants tend to have a larger number of reported theft events. Additionally, areas with large number of reported rodent infestations and illegal dumping events also tend to have a larger number of reported theft events. 
+
+```{r make_maps, fig.width=15, fig.height=25}
 ## Visualize the Risk Factors
 
-grid.arrange(ncol=3,nrow=3,
+grid.arrange(ncol=2,nrow=4,
 ggplot()+
   geom_sf(data=net1,aes(fill=illegaldumping_count),color='transparent')+
+  scale_fill_viridis(option="rocket",direction=-1)+
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  mapTheme(),
+ggplot()+
+  geom_sf(data=net1,aes(fill=illegaldumping.nn),color='transparent')+
   scale_fill_viridis(option="rocket",direction=-1)+
   geom_sf(data=dc_water,fill='lightblue',color='transparent') +
   geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
@@ -263,12 +357,6 @@ ggplot()+
   geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
   mapTheme(),
 ggplot()+
-  geom_sf(data=net1,aes(fill=wealth_inequality_index),color='transparent')+
-  scale_fill_viridis(option="rocket",direction=-1)+
-  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
-  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
-  mapTheme(),
-ggplot()+
   geom_sf(data=net1,aes(fill=rodent_count),color='transparent')+
   scale_fill_viridis(option="rocket",direction=-1)+
   geom_sf(data=dc_water,fill='lightblue',color='transparent') +
@@ -279,42 +367,26 @@ ggplot()+
   scale_fill_viridis(option="rocket",direction=-1)+
   geom_sf(data=dc_water,fill='lightblue',color='transparent') +
   geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  mapTheme(),
+ggplot()+
+  geom_sf(data=net1,aes(fill=wealth_inquality_av),color='transparent')+
+  scale_fill_viridis(option="rocket",direction=-1, labels = scales::label_percent())+
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  mapTheme(),
+ggplot()+
+  geom_sf(data=net1,aes(fill=wealth_public_housing.distance),color='transparent')+
+  scale_fill_viridis(option="rocket",direction=-1)+
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
   mapTheme()
 )
 
 ```
 
-### Join in areal data
+# Local Moran's I Analysis
 
-Using spatial joins to join *centroids* of fishnets to polygon for neighborhoods and districts.
-
-> What issues arise when we try to join polygons to polygons in space?
-
-```{r join_police_districts_wards}
-
-police_districts <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Public_Safety_WebMercator/MapServer/9/query?outFields=*&where=1%3D1&f=geojson') %>%
-  st_transform('ESRI:103376') %>%
-  rename(police_name = NAME)
-
-neighboorhood <- st_read('https://maps2.dcgis.dc.gov/dcgis/rest/services/DCGIS_DATA/Administrative_Other_Boundaries_WebMercator/MapServer/17/query?outFields=*&where=1%3D1&f=geojson') %>%
-  st_transform('ESRI:103376') %>%
-  rename(nbh_names = NBH_NAMES)
-
-final_net <-
-  st_centroid(fishnet) %>%
-    st_join(dplyr::select(neighboorhood, nbh_names)) %>%
-    st_join(dplyr::select(police_districts, police_name)) %>%
-      st_drop_geometry() %>%
-      left_join(net1,.,by='uniqueID') %>%
-  na.omit()
-
-```
-
-## Local Moran's I for fishnet grid cells
-
-We use the {spdep} package to to build neighborhood weights and list to calculate local Moran's I.
-
-```{r}
+```{r localmorans1}
 ## generates warnings from PROJ issues
 ## {spdep} to make polygon to neighborhoods... 
 final_net.nb <- poly2nb(as_Spatial(final_net), queen=TRUE)
@@ -324,7 +396,7 @@ final_net.weights <- nb2listw(final_net.nb, style="W", zero.policy=TRUE)
 # print(final_net.weights, zero.policy=TRUE)
 ```
 
-```{r}
+```{r localmorans2}
 ## see ?localmoran
 local_morans <- localmoran(final_net$theft_count, final_net.weights, zero.policy=TRUE) %>% 
   as.data.frame()
@@ -341,13 +413,22 @@ final_net.localMorans <-
   
 ```
 
-### Plotting local Moran's I results
+## Examining Spatial Clustering in our Dependant Variable
 
-This is a complex code chunk - it's a loop which builds ggplots of local Moran's for each of your `vars`
+Local Morans I is a useful tool for identifying statistically significant concentrations of high values. A local Moran's I analysis for our dependent variable (theft_count) is used to determine areas where there is a clustering of grid cells with a large number of reported thefts. The output below includes four maps:
 
-> What does a significant hot spot tell us about the distribution of burglaries?
+1. Map showing the number of reported theft events in each grid square
 
-```{r}
+2. Map showing the Local Morans I value for each grid square - a high local Morans I value indicates that a grid square and the grid squares around it all contain a large number of reported theft events.
+
+3. Map showing the p-score associated with each Local Morans I value. The p-score is a measure of the statistical significance of the Local Morans I value. A low p-score value indicates the Moran's I value is statistically significant. If the score is 0.01 we are 99% confident that the clustering of reported thefts is not the result of random chance. 
+
+4. A map showing Significant Hotspot. We consider any grid square with a p-value less than 0.01 to be a significant hot spot. 
+
+There is the one large hotpot around the Washington DC urban core where a large number of reported theft events are present. This hotspot includes neighborhoods like Chinatown, U-street, Shaw, Capital Hill, and Metro Center. Smaller hotspots are also present in Georgetown and Navy Yard Waterfront neighborhoods.
+
+
+```{r moransI_plot}
 ## This is just for plotting
 vars <- unique(final_net.localMorans$Variable)
 varList <- list()
@@ -357,19 +438,52 @@ for(i in vars){
     ggplot() +
       geom_sf(data = filter(final_net.localMorans, Variable == i), 
               aes(fill = Value), colour=NA) +
-      scale_fill_viridis(name="") +
+      scale_fill_viridis(option='rocket',direction=-1,name="") +
       labs(title=i) +
+      geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+      geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
       mapTheme(title_size = 10) + theme(legend.position="bottom")}
 
 do.call(grid.arrange,c(varList, ncol = 4, top = "Local Morans I statistics, Theft"))
 ```
-## Correlation Plots
 
-```{r, correlation_plot, fig.height=9,fig.width=7}
+## Calculate Distance to Hot Spot
+
+Based on the local Moran's I analysis the distance from a grid square to the nearest area which is identified as a statistically significant theft hotspot can be calculated. The distance to the nearest hotspot can be incorporated into the theft prediction model to help control for local spatial processes of theft. The map below shows the distance to the nearest theft hotspot in feet.
+
+```{r distance_hotspot, fig.height=5, fig.width=5}
+final_net <- final_net %>% 
+  mutate(theft.isSig = 
+           ifelse(local_morans[,5] <= 0.001, 1, 0)) %>%
+  mutate(theft.isSig.dist = 
+           nn_function(st_c(st_coid(final_net)),
+                       st_c(st_coid(final_net %>% dplyr::filter(theft.isSig == 1))), 
+                       k = 1))
+
+ggplot() +
+      geom_sf(data = final_net, aes(fill=theft.isSig.dist), colour=NA) +
+      scale_fill_viridis(option='rocket',direction=-1,name="Distance to Hotspot (feet)") +
+      labs(title="Distance to Nearest Theft Hotspot") +
+      geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+      geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+      mapTheme()
+
+```
+
+# Correlation Plots
+
+The correlation plots below show the correlation between the dependent variable (Number of theft events) and our predictors. The first two scatter plots are based on the distance to the hotspot analysis and show that grid squares which are located inside or near a theft hotspot tend to have more theft events. 
+
+For the restaurants, illegal dumping and rodent scatter plots the first plot shows the relationship between the number of the independent variable events occurring in the grid square and the number of theft events. We can observe that as grid squares which contain more restaurants, more reported illegal dumping events, and more requests for rodent treatment are also likely to contain more reported theft events. 
+
+The wealth scatter plot indicates that there is no clear correlation between the wealth inquality index and the number of theft events. For this reason, the wealth inquality variable is excluded from the regression. However, there is a correlation between the distance to the nearest publc housing complex and theft - it appears that the number of theft events tends to be higher near public housing complexes. 
+
+
+```{r, correlation_plot, fig.height=12,fig.width=10}
 
 correlation.long <-
   st_drop_geometry(final_net) %>%
-    dplyr::select(-uniqueID, -cvID, -police_name, -nbh_names) %>%
+    dplyr::select(-uniqueID, -cvID, -nbh_names, -Row.names) %>%
     gather(Variable, Value, -theft_count)
 
 correlation.cor <-
@@ -386,79 +500,124 @@ ggplot(correlation.long, aes(Value, theft_count)) +
   labs(title = "Theft count as a function of risk factors") +
   plotTheme()
 ```
+# Model Development
 
-```{r, dependant_variable_hist, fig.height}
+## Histogram of Dependent Variable
 
+The chart below shows a histogram of our dependent variable (reported theft events in each square). We can see there is a large range in the number of theft events, and the distribution has a clear right skew with the majority of grid squares having less than 50 theft events. Because of the distribution of the data, we will use a Poisson regression to predict the number of theft events which are likely to take place in each grid square in the future. Poisson regression methods are most appropriate when modelling a count outcome such as the count of theft events.
+
+```{r, dependant_variable_hist, fig.width=9}
 ggplot()+
-  geom_histogram(data=final_net,aes(x=theft_count),fill='grey60',color='black',bins=100)+
+  geom_histogram(data=final_net,aes(x=theft_count),fill='grey60',color='black',bins=200)+
+  ggtitle('Histogram of Reported Theft Events')+
   plotTheme()
-
 ```
+## Running the Model
 
+Next the model to forecast the number of theft events which will likely occur in future years is run. We run two different version of our model:
+
+* The first uses the distance to the nearest neighbor values for restaurants, illegal dumping, and requests for rodent treatment along with the distance to the nearest significant cluster for theft events and the distance to the nearest public housing complex.
+
+* The second model uses the count variables for illegal dumping events, requests for rodent treatment, and restaurants along with the distance to the nearest significant cluster for theft events and the distance to the nearest public housing complex.
+
+For each model, we use a training and testing approach in which the model is developed while excluding a selection of grid squares from the model. For each model, we also employ cross validation which involves training the model multiple times with a different set of theft count grid squares excluded from the model. The excluded grid squares are called the testing dataset. We then predict the theft count of the grid squares in the testing dataset and compare the predicted value to the actual number of theft events to calculate an error. This process is repeated multilpe times in order to see if the model errors are consistent and to determine if the model generates consistent errors when provided with different data..
+
+Two different cross validation techniques are use to assess the models:
+
+* **Neighborhood fold Cross Validation:** First, a leave one out group spatial cross validation technique is used in which the model is trained with all the grid squares from one neighborhood excluded from the analysis. The model is trained with just the grid squares from the remaining neighboorhoods, a theft count is predicted for the grid squares in the excluded neighborhood. Each neighborhood takes a turn being excluded from the training dataset, allowing a prediction to be developed for all the grid squares in all neighboorhoods.
+
+* **Random k-fold Cross Validation:** Second, the cross validation process is repeated, but instead of dividing the grid square by neighborhood the squares are randomly split into 51 different groups. The model is trained 51 times and each time a different set of grid squares is excluded and forms the testing set. A prediction for the number of theft events is produced for the grid squares in the testing set. This process is repeated until predictions have been produced for all groups.
 
 ```{r crossvalidation, results='hide'}
 
-# View(crossValidate)
-
 ## define the variables we want
-reg.vars <- c("illegaldumping.nn", "restaurants.nn","rodents.nn","wealth_inequality_index")
+reg.vars1 <- c("illegaldumping.nn", "restaurants.nn","rodents.nn","wealth_public_housing.distance","theft.isSig.dist")
+
+reg.vars2 <- c("illegaldumping_count", "restaurants_count","rodent_count","wealth_public_housing.distance","theft.isSig.dist")
 
 ## RUN REGRESSIONS
-reg.spatialCV <- crossValidate(
+reg1.spatialCV <- crossValidate(
   dataset = final_net,
   id = "nbh_names",                           
   dependentVariable = "theft_count",
-  indVariables = reg.vars) %>%
+  indVariables = reg.vars1) %>%
     dplyr::select(cvID = nbh_names, theft_count, Prediction, geometry)
 
-reg.CV <- crossValidate(
+reg1.CV <- crossValidate(
   dataset = final_net,
   id = "cvID",                           
   dependentVariable = "theft_count",
-  indVariables = reg.vars) %>%
+  indVariables = reg.vars1) %>%
+    dplyr::select(cvID = cvID, theft_count, Prediction, geometry)
+
+reg2.spatialCV <- crossValidate(
+  dataset = final_net,
+  id = "nbh_names",                           
+  dependentVariable = "theft_count",
+  indVariables = reg.vars2) %>%
+    dplyr::select(cvID = nbh_names, theft_count, Prediction, geometry)
+
+reg2.CV <- crossValidate(
+  dataset = final_net,
+  id = "cvID",                           
+  dependentVariable = "theft_count",
+  indVariables = reg.vars2) %>%
     dplyr::select(cvID = cvID, theft_count, Prediction, geometry)
 
 reg.summary <- 
-  rbind(mutate(reg.spatialCV,Error = Prediction - theft_count,
-               Regression = "Spatial Location CV"),
-        mutate(reg.CV, Error = Prediction - theft_count,
-               Regression = "Random k-fold CV"))
+  rbind(mutate(reg1.spatialCV,Error = Prediction - theft_count,
+               Regression = "Regression 1 Neighboorhood fold CV"),
+        mutate(reg1.CV, Error = Prediction - theft_count,
+               Regression = "Regression 1 Random k-fold CV"),
+        mutate(reg2.spatialCV,Error = Prediction - theft_count,
+               Regression = "Regression 2 Neighboorhood fold CV"),
+        mutate(reg2.CV, Error = Prediction - theft_count,
+               Regression = "Regression 2 Random k-fold CV"))
 ```
 
-### Calculating Errors across space
+# Assessing Model Errors
 
-```{r}
+The next step is to examine our model errors, and determine which of the two theft prediction models has a lower error. 
+
+## Comparing Errors Between Models
+
+The maps below show the average absolute model errors results for each group of excluded points. In the neighborhood Cross validation (CV) maps, the grid squares were excluded by neighborhood so the average error for the grid squares in each neighborhood can be observed. The numeric label indicates the average error for the neighboorhood. Both models  have larger mean absolute errors in neighborhoods near downtown Washington DC. However, the errors are smaller in regression one. Regression one has smaller errors in both the Random k-fold cross validation and the neighborhood cross validation analysis.
+
+```{r error_maps, fig.width=10, fig.height=10}
 error_by_reg_and_fold <- 
   reg.summary %>%
     group_by(Regression, cvID) %>% 
     summarize(Mean_Error = mean(Prediction - theft_count, na.rm = T),
               MAE = mean(abs(Mean_Error), na.rm = T),
+              MAE_label = round(mean(abs(Mean_Error), na.rm = T),1),
               SD_MAE = mean(abs(Mean_Error), na.rm = T)) %>%
   ungroup()
 
-error_by_reg_and_fold %>%
-  ggplot() +
-    geom_sf(aes(fill = MAE)) +
-    facet_wrap(~Regression) +
-    scale_fill_viridis() +
-    labs(title = "Theft errors by Regression") +
-    mapTheme() + theme(legend.position="bottom")
+ggplot() +
+  geom_sf(data = error_by_reg_and_fold,aes(fill = MAE),color='grey70',linewidth=0.2) +
+  facet_wrap(~Regression) +
+  scale_fill_viridis(option='rocket', direction=-1) +
+  labs(title = "Theft errors by Regression") +
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  geom_sf_text(data = error_by_reg_and_fold %>% dplyr::filter(Regression == "Regression 1 Neighboorhood fold CV" | Regression == "Regression 2 Neighboorhood fold CV"), aes(label = MAE_label),color='grey60',size=2.5)+
+  mapTheme() + theme(legend.position="bottom")
 ```
 
+The table below shows the mean absolute error across all groups for each Regression and cross validation technique. The standard deviation of the errors is also included. Regression one performs better and has a lower mean absolute error and a lower error standard deviation. It is concluded that regression one which includes the nearest neighbor values for restaurants, illegal dumping, and requests for rodent treatment along with the distance to the nearest significant cluster of theft events and the distance to the nearest public housing sight is a more accurate model. The remainder of this write-up will only present results for the model with higher accuracy, regression one.
 
-``` {r}
-st_drop_geometry(reg.summary) %>%
+``` {r error_table}
+st_drop_geometry(error_by_reg_and_fold) %>%
   group_by(Regression) %>% 
-  mutate(abs_error = abs(Error)) %>%
-    summarize(Mean_MAE = round(mean(abs(abs_error)), 2),
-              SD_MAE = round(sd(abs(abs_error), 2))) %>%
-  kable() %>%
-  kable_classic()
+  summarize(Mean_MAE = round(mean(MAE), 2),
+              SD_MAE = round(sd(MAE), 2)) %>%
+  kable(col.names = c('Regression','Mean Absolute Error','Standard Deviation of Errors')) %>%
+  kable_styling("striped", full_width=F)
 ```
 
-## Racial Analysis
+## Generalizibility by Neighboorhood Context
 
-``` {r}
+``` {r get_data, results='hide'}
 tracts20 <- 
   get_acs(geography = "tract", variables = c("B01001_001E","B01001A_001E"), 
           year = 2020, state='DC', geometry=T) %>%
@@ -469,32 +628,44 @@ tracts20 <-
          NumberWhites = B01001A_001) %>%
   mutate(percentWhite = NumberWhites / TotalPop,
          raceContext = ifelse(percentWhite > .5, "Majority_White", "Majority_Non_White"))
-
-ggplot()+
-  geom_sf(data=tracts20, aes(fill=raceContext))
 ```
 
-``` {r}
+It is important to understand if our model is generalizable across different types of neighborhoods. One way to check this is to examine if the theft model produces similar errors in both majority white and majority non-white areas. 
+
+In order for the model to be generalizable across contexts it should produce similar errors in both majority white and majority non-white areas. Data from the 2021 American Community Survey is used to identify the majority white and majority non white areas in Washington Dc. The map below shows areas identified as majority white and areas identified as majority non-white. 
+
+``` {r income_map}
+ggplot()+
+  geom_sf(data=tracts20, aes(fill=raceContext),linewidth=0.1)+
+  scale_fill_manual(values=c("grey50","lightyellow"), name= 'Race')+
+  geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+  geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
+  ggtitle("Census Tracts by Race Content")+
+  mapTheme()
+```
+
+The table below shows the average errors of regression one for grid squares located in majority non-white and grid squares located in majority white areas. The grid square values in majority white areas are negative, indicating that our model appears to underestimate the number theft events in majority white areas. Conversely, the average error is positive in majority non white areas indicating that the model tends to over estimate the number of theft events in majority non white areas. 
+
+``` {r error_table_race}
 reg.summary %>% 
-    st_centroid() %>%
+  filter(str_detect(Regression, "Regression 1")) %>%
+  st_centroid() %>%
     st_join(tracts20) %>%
     na.omit() %>%
       st_drop_geometry() %>%
       group_by(Regression, raceContext) %>%
       summarize(mean.Error = mean(Error, na.rm = T)) %>%
       spread(raceContext, mean.Error) %>%
-      kable(caption = "Mean Error by neighborhood racial context") %>%
-        kable_styling("striped", full_width = F)  
+      kable(caption = "Mean Error by neighborhood racial context", col.names = (c("Regression","Majority Non White","Majority White"))) %>%
+      kable_styling("striped", full_width = F)  
 ```
 
 
-## Density vs predictions
+# Model perforamance compared to density analysis
 
-The `spatstat.explore` package's `density.ppp` function gets us kernel density estimates with varying search radii. We can use these to compare accuracy with our predictions - we can join them to our `final_net` and them compare estimates.
+The last step in the assessment of our model performance is to see how the model performs compared to a density analysis. Density analysis a more traditional method of forecasting theft events, in which it is assumed that areas with a high rate of theft in the past will have a high rate of theft in the future. The results of the theft prediction model are compared to the results of theft density analysis with both using 2021 reported theft events as the input. Theft events for a different year (2022) are overlaid on top of both the prediction model results and the density analysis results to see which does a better job forecasting theft events in 2022.
 
-Note that the code here is *different* than in the book - it has been updated to keep up with changes in packages.
-
-```{r read_theft_data, warning=False, message=False}
+```{r read_theft_data2022, warning=FALSE, message=FALSE, results='hide'}
 thefts2022<- 
   st_read("https://maps2.dcgis.dc.gov/dcgis/rest/services/FEEDS/MPD/MapServer/4/query?outFields=*&where=1%3D1&f=geojson") %>%
   st_transform('ESRI:103376') %>%
@@ -511,7 +682,7 @@ theft_KDE_sum <- as.data.frame(theft.1000) %>%
 kde_breaks <- classIntervals(theft_KDE_sum$value, 
                              n = 5, "fisher")
 theft_KDE_sf <- theft_KDE_sum %>%
-  mutate(label = "Kernel Density",
+  mutate(label = "Density Analysis",
          Risk_Category = classInt::findCols(kde_breaks),
          Risk_Category = case_when(
            Risk_Category == 5 ~ "5th",
@@ -526,12 +697,13 @@ theft_KDE_sf <- theft_KDE_sum %>%
   dplyr::select(label, Risk_Category, theftcount)
 ```
 
-```{r}
-ml_breaks <- classIntervals(reg.spatialCV$Prediction, 
+
+```{r make_map_riskcategories}
+ml_breaks <- classIntervals(reg1.CV$Prediction, 
                              n = 5, "fisher")
 theft_risk_sf <-
-  reg.spatialCV %>%
-  mutate(label = "Risk Predictions",
+  reg1.CV %>%
+  mutate(label = "Theft Risk Model",
          Risk_Category =classInt::findCols(ml_breaks),
          Risk_Category = case_when(
            Risk_Category == 5 ~ "5th",
@@ -546,21 +718,30 @@ theft_risk_sf <-
   dplyr::select(label,Risk_Category, theftcount)
 ```
 
-```{r}
+## Map of Model Results compared to Density Analysis
+
+The maps below the results of the kernel density and the theft risk model are all both presented. In both sets of results, grid square are grouped into five categories, ranging from 1 to 5. Category one grid squares have the lowest theft risk, category five grid squares have the highest theft risk. A sample of 1,000 theft events which occurred in 2022 are overlaid on top of the the results from both models. There is a degree of similarity between both analysis, and both approaches predict that the highest concentration of theft events tends to occur in grid squares located in and around downtown Washington DC. A notable difference, is that the the theft risk model, forecasts a greater number of grid squares outside of the downtown area having a high risk of theft. For instance, there are multiple grid squares east of the Anacostia river which have a risk category of three or four in the theft risk model. In the density analysis, only one grid square east of the Anacostia river has a risk category value above two.
+
+```{r kernel_map}
 rbind(theft_KDE_sf, theft_risk_sf) %>%
   gather(Variable, Value, -label, -Risk_Category, -geometry) %>%
   ggplot() +
     geom_sf(aes(fill = Risk_Category), colour = NA) +
-    geom_sf(data = thefts2022, size = .1, colour = "grey50") +
+    geom_sf(data = sample_n(thefts2022,1000), size = .01, colour = "grey50") +
     facet_wrap(~label, ) +
     scale_fill_viridis_d(option="rocket",direction=-1) +
+    geom_sf(data=dc_water,fill='lightblue',color='transparent') +
+    geom_sf(data = dc_quadrents, fill='transparent',color='grey10')+
     labs(title="Comparison of Kernel Density and Risk Predictions",
-         subtitle="2021 theft risk predictions; 2022 burglaries") +
+         subtitle="2021 theft risk predictions; 2022 thefts") +
     mapTheme(title_size = 14)
 ```
 
+## Graph Results 
 
-```{r}
+The graph below shows the percentage of 2022 theft events which occur inside grid squares falling into each risk category according to both models. In the theft risk model, a larger number of crime events occur in grid cells classified as risk category five. Additionally, the risk model displays an upward trend, where the number of theft events occurring increases in grid squares which have a high risk category. For these reasons, it appears that the theft risk model does a better job forecasting theft hotspots when compared to the density analysis.  
+
+```{r kernel_table}
 rbind(theft_KDE_sf, theft_risk_sf) %>%
   st_drop_geometry() %>%
   na.omit() %>%
@@ -569,13 +750,21 @@ rbind(theft_KDE_sf, theft_risk_sf) %>%
   summarize(theftcount = sum(Value)) %>%
   ungroup() %>%
   group_by(label) %>%
-  mutate(Pcnt_of_test_set_crimes = theftcount / sum(theftcount)) %>%
+  mutate(Pcnt_of_test_set_crimes = (theftcount / sum(theftcount))* 100) %>%
     ggplot(aes(Risk_Category,Pcnt_of_test_set_crimes)) +
       geom_bar(aes(fill=label), position="dodge", stat="identity") +
       scale_fill_viridis(discrete = TRUE, name = "Model") +
-      labs(title = "Risk prediction vs. Kernel density, 2022 theft",
-           y = "% of  Test Set Thefts Per Model (per model)",
+      labs(title = "Theft prediction vs. Kernel density, 2022 Theft Events",
+           y = "% of Thefts Events in Each Risk Category by Model",
            x = "Risk Category") +
   theme_bw() +
       theme(axis.text.x = element_text(angle = 45, vjust = 0.5))
 ```
+
+## Conculsion
+
+The model presented her for predicting theft events is an improvement over traditional density mapping techniques, and does a better job identifying petty theft hotspots. Density analysis approaches fail to identify some key theft hotspots located outside of the cities urban core. The theft prediction model highlights some key areas which might get overlooked by the density model. Additionally, the theft prediction model has a low mean absolute error. For these reason, the model is useful and can be used to help inform citizens of potential crime hotspots and it can also be used by police officers and private security to develop a better understanding of what geographic areas have a high risk of petty theft.
+
+One key limitation is that theft risk prediction model can only be trained using reported petty theft events. The reported petty theft events likely only capture a small fraction of the true number of petty theft events occurring in Washington DC. Because of the small monetary value of items stolen through petty theft many petty theft events are not reported to the authorities and are thus not captured in crime databases. It is also likely that the number of theft events is more under reported higher in non-white majority areas due to the lack of trust for law enforcement in these areas. Conversely, it is likely that the number of unreported theft events is lower in majority white areas of Washington DC. 
+
+When comparing our model to actual reported theft events, our model tends to underestimate the number of reported theft events in majority white areas and over estimate the number of theft events in non-majority white areas. Given the reporting bias discussed, these over and underestimations could be positive, and usage of the model may help remove some of the reporting bias present in official reports of petty theft. However, since the model is trained using the reported theft data it is likely that using the model can not fully address all reporting bias issues.
