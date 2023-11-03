@@ -500,6 +500,7 @@ ggplot(correlation.long, aes(Value, theft_count)) +
   labs(title = "Theft count as a function of risk factors") +
   plotTheme()
 ```
+
 # Model Development
 
 ## Histogram of Dependent Variable
@@ -512,6 +513,7 @@ ggplot()+
   ggtitle('Histogram of Reported Theft Events')+
   plotTheme()
 ```
+
 ## Running the Model
 
 Next the model to forecast the number of theft events which will likely occur in future years is run. We run two different version of our model:

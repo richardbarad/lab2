@@ -1,0 +1,184 @@
+---
+title: "People Based ML - Serving Facebook Ads"
+author: "Michael Fichman, Matt Harris & Ken Steif"
+date: "October 13,2023"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen = 999)
+
+library(tidyverse)
+library(caret)
+library(ckanr)
+library(FNN)
+library(kableExtra)
+library(grid)
+library(viridisLite)
+library(viridis)
+library(gridExtra)
+library(jtools)
+library(kableExtra)
+library(jtools)     
+library(ggstance) 
+library(ggpubr)   
+library(broom.mixed) 
+
+
+palette5 <- c("#981FAC","#CB0F8B","#FF006A","#FE4C35","#FE9900")
+palette4 <- c("#981FAC","#FF006A","#FE4C35","#FE9900")
+palette2 <- c("#981FAC","#FF006A")
+
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
+```
+
+# Data
+
+```{r data import, include=FALSE}
+housing_data <- 
+  read_csv("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/Chapter6/housingSubsidy.csv")
+```
+
+# Data Exploration
+
+```{r data exploration numeric, include=FALSE}
+housing_data_numeric <- housing_data %>% 
+                        na.omit() %>%
+                        select(y, 
+                               age, 
+                               previous, 
+                               unemploy_rate, 
+                               cons.price.idx, 
+                               cons.conf.idx,
+                               inflation_rate, 
+                               spent_on_repairs,
+                               campaign,
+                               pdays) %>%
+                               pivot_longer(cols = -y,
+                                             names_to = "variable")
+  
+housing_data_numeric_summary <- housing_data_numeric %>%
+                                group_by(y, variable) %>%
+                                summarise(mean = mean(value))
+```
+
+```{r data visualization numeric2}
+
+ggplot()+
+  geom_density(data=housing_data_numeric,aes(x=value,color=y),transparent='20')+
+  facet_wrap(~variable,scales = "free")+
+  scale_color_manual(values=c('lightgreen','orange'))+
+  theme_bw()
+
+```
+
+```{r data visualization numeric}
+
+ggplot(data=housing_data_numeric_summary,aes(x=y,y=mean,fill=y))+
+  geom_bar(stat='identity')+
+  facet_wrap(~variable,scales = "free")+
+  scale_fill_manual(values=c('orange','lightgreen'),name='Enter Housing Subsidy')+
+  labs(x="Enter Housing Subsidy Program", y="Mean Value", 
+      title = "Feature associations with likelihood of entering housing subsidy program",
+      subtitle = "Continous outcomes")+
+  theme_bw()
+``` 
+
+```{r data visualization categorical, include=FALSE}
+
+housing_data_cat <- housing_data %>% 
+                    select(-age,
+                           -previous, 
+                           -(unemploy_rate:spent_on_repairs),
+                           -y_numeric,
+                           -...1,
+                           -pdays,
+                           -campaign,
+                           -month)
+
+housing_data_cat_long <- housing_data_cat %>%
+  gather(variable, value, -y) 
+
+housing_data_cat_summ <- housing_data_cat_long %>%
+  count(variable,value,y) %>%
+  left_join(., housing_data_cat_long %>% count(variable,value), by=c('variable','value'), suffix=c('value_count','total_count')) %>%
+  mutate(percent = nvalue_count / ntotal_count * 100)
+``` 
+
+```{r data visualization categorical, fig.height=7,fig.width=10}
+
+ggplot(data=housing_data_cat_summ, aes(x = value, y = percent, fill = y)) + 
+  geom_bar(stat = "identity")+
+  facet_wrap(~variable,scales = "free")+
+  scale_fill_manual(values=c('orange','lightgreen'))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r data visualization categorical, fig.height=7,fig.width=10}
+
+ggplot(data=housing_data_cat_summ, aes(x = value, y = nvalue_count, fill = y)) + 
+  geom_bar(stat = "identity")+
+  facet_wrap(~variable,scales = "free")+
+  scale_fill_manual(values=c('orange','lightgreen'))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r data partition, include=FALSE}
+set.seed(3456)
+housing_index <- createDataPartition(housing_data$y_numeric, p = .65,
+                                  list = FALSE,
+                                  times = 1)
+
+housing_train <- housing_data[housing_index,] %>%  transform(y_numerc = as.numeric(y_numeric)) 
+housing_test  <- housing_data[-housing_index,] %>% transform(y_numerc = as.numeric(y_numeric))
+```
+
+
+```{r logistic regression kitchen_sink}
+
+housing_model <- glm(y_numeric ~ .,
+                     data = housing_train %>%
+                     select(-...1,-y),
+                     family="binomial" (link="logit"))
+
+summary(housing_model)
+
+```
+
+
+```{r data exploration categorical, include=FALSE}
+housing_data_cat <- housing_data %>% 
+                    select(-age,
+                           -previous, 
+                           -(unemploy_rate:spent_on_repairs),
+                           -y_numeric)
+
+unique_vals <- list()
+for (i in colnames(housing_data_cat)) {
+  unique_vals[i] <- housing_data_cat[i] %>% unique()
+  print(unique_vals[i])
+}
+
+housing_data_mutated <- housing_data %>% mutate(
+    education_group = 
+    case_when(education %in% c("university.degree",   "professional.course") ~ "university",
+              !education %in% c("university.degree",   "professional.course") ~ "non-university"),
+    job_group = case_when(job %in% c("services", "admin.", "management") ~ "white-collar",
+                    job %in% c("blue-collar",   "housemaid", "technician") ~ "blue-collar",
+                    job %in% c("self-employed",   "entrepreneur") ~ "self-employed",
+                    job %in% c("student", "unemployed", "unknown") ~ "not employed", 
+                    job %in% c("retired") ~ "retired"),
+    season = case_when(month %in% c("mar", "apr", "may") ~ "late spring",
+                      month %in% c("jun", "jul", "aug") ~ "summer",
+                      month %in% c("sep", "oct") ~ "autumn",
+                      month %in% c("nov", "dec") ~ "autumn")) 
+```
+
+
+

@@ -1,0 +1,649 @@
+---
+title: "People Based ML - Serving Facebook Ads"
+author: "Richard Barad"
+date: "October 13,2023"
+output: 
+  html_document:
+    theme: journal
+    toc: yes
+    code_folding: hide
+    number_sections: yes
+---
+
+# Import Libraries
+First we import the libraries we will be using for this analysis.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE,message=TRUE)
+options(scipen = 999)
+```
+
+```{r import_libraries, include=FALSE}
+library(tidyverse)
+library(caret)
+library(ckanr)
+library(FNN)
+library(kableExtra)
+library(grid)
+library(viridis)
+library(gridExtra)
+library(jtools)     
+library(ggstance) 
+library(ggpubr)   
+library(broom.mixed) 
+library(pscl)
+library(pROC)
+library(plotROC)
+library(prettydoc)
+
+palette5 <- c("#981FAC","#CB0F8B","#FF006A","#FE4C35","#FE9900")
+palette4 <- c("#981FAC","#FF006A","#FE4C35","#FE9900")
+palette2 <- c("#981FAC","#FF006A")
+
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+```
+
+# Introduction
+
+The Department of Housing and Community Development (HCD), currently has a program which provides home repair tax credits to eligible residents. This tax program has been around for almost 20 years, but there is broad consensus among HCD staff that uptake to join the program is lower than it should be. HCD believes the uptake is low because HCD currently contacts home owners at random durring targeting.
+
+HCD has hired us to develop a predicative algorithm which can help inform who to target during future campaigns. HCD has provided us with a dataset containing a sample of records for individuals from previous contact campigns - the samples includes information on if the individual decided to sign up for the credit. Our task is to develop a predicative model which tells HCD which people to contact in future campaigns based on characteristics. Our approach will involve training and testing the model to see how predicted results from the sample compare to the actual result. The comparison will allow us to assess model errors and accuracy. 
+
+The modelling approach which will be used is called a logistic model, and it is an approach traditionally used for predicting binary outcomes (i.e: yes/no). The model provides as an output the odds of a caller being a yes. These odds are expressed on a 0 - 1 scale. A key step when using a logistic model is the step of selecting a threshold for what callers to consider potential 1s - this threshold should be selected to ensure an optimal increase in public revenue. Our analysis will consider multiple different models and different tresholds in order to determine the optimal model and threshold combination for the HCD.
+
+# Data Analysis
+
+## Import Data
+
+This code imports the sample data provided by the HCD.
+
+```{r data import, include=FALSE}
+housing_data <- 
+  read_csv("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/Chapter6/housingSubsidy.csv") %>%
+  mutate(pdays = as.numeric(ifelse(pdays == '999','0',pdays)))
+```
+
+## Data Exploration
+
+Next we explore the data to try to identify features which result in a higher likelihood of an individual taking a credit. We will want to ensure such features are included in our model, as including these features will help increase the models ability to accurately predict the likelihood of someone taking a credit.
+
+### Continous Data Exploration
+
+We start by exploring the continuous data in the dataset provided. The continuous variables include the following variables:
+
+* **Age**: Age of Homeowner
+* **previous**: # of contacts before this campaign for this individual
+* **unemploy_rate**: 	Unemployment rate at time of campaign
+* **cons.price.idx**: Consumer Price Idex at campaign time
+* **cons.conf.idx**: Consumer confidence index at time of campaign
+* **inflation_rate**: US Inflation Rate on day of campaign
+* **spent_on_repairs**: Amount annually spent on home repairs by household
+* **campaign**: # of contacts for this individual for this campaign
+* **pdays**: 	# days after ind. last contacted from a previous program (Note: In the dataset provided, the number 999 indicates that the client had never been contacted before - we convert 999 to 0 and make pdays a numeric variable)
+
+```{r data exploration numeric}
+housing_data_numeric <- housing_data %>% 
+                        na.omit() %>%
+                        select(y, 
+                               age, 
+                               previous, 
+                               unemploy_rate, 
+                               cons.price.idx, 
+                               cons.conf.idx,
+                               inflation_rate, 
+                               spent_on_repairs,
+                               campaign,
+                               pdays) %>%
+                               pivot_longer(cols = -y,
+                                             names_to = "variable")
+  
+housing_data_numeric_summary <- housing_data_numeric %>%
+                                group_by(y, variable) %>%
+                                summarise(mean = mean(value))
+```
+
+
+The plots below show histograms for our continuous variables. Histograms help us better understand the distribution of our data. Some important observations include that the inflation rate was very high when most callers in our sample were contacted. Additionally, the vast majority of contacts in our sample have never been contacted before as the number of contacts in current campaign variable (i.e: campaign) is 0 for most of the data points. The campaign variable has a right skew which indicates that it may benefit from a log transformation - log transformation is useful for standardizing data which has a right skew (i.e: a high number of low values).
+
+```{r histograms, fig.width=14, fig.height=7}
+
+supp.labs <- c("Age","Contacts in current campaign","Consumer Price Index","Consumer Confidence Index","Inflation Rate","Days since previous contact (pdays)","Contacts in previous Campaigns","Spent on Repairs","Unemployment Rate")
+names(supp.labs) <- c("age", "campaign","cons.conf.idx","cons.price.idx","inflation_rate","pdays","previous","spent_on_repairs","unemploy_rate")
+
+ggplot()+
+  geom_histogram(data=housing_data_numeric,aes(x=value),bins=20)+
+  facet_wrap(~variable,scales = "free", labeller = labeller(variable = supp.labs))+
+  labs(x="Value", y="Count", 
+      title = "Histograms of Continous Variables")+
+  theme_bw()
+```
+
+The plots below show the mean value for each of our continuous variables when homeowners decided to enter the housing subsidy program, and when home owners decided not to enter the housing subsidy program. The can help us understand which variables result in a household having a higher likelihood of taking the subsidy. We can again observe that age has little impact on the likelihood of taking the subsidy. However, the days since previous contact has a high impact - individuals whom have not been contacted in a long time have a higher likelihood of taking the subsidy as shown by the graph for the pdays variable. Additionally, homeowners are more likely to take subsidy if the campaign occurs when the unemployment rate is low and the inflation rate is low - we can conclude this because the average value for the Yes column is lower than the average value for the no column. However, it is important to note that looking at just the mean can mask trends. For this reason, we will also examine density plots in the next section. 
+
+```{r data_visualization_numeric, fig.width=14, fig.height=7}
+
+ggplot(data=housing_data_numeric_summary,aes(x=y,y=mean,fill=y))+
+  geom_bar(stat='identity')+
+  facet_wrap(~variable,scales = "free",labeller = labeller(variable = supp.labs))+
+  scale_fill_manual(values=c('orange','lightgreen'),name='Enter Housing Subsidy')+
+  labs(x="Enter Housing Subsidy Program", y="Mean Value", 
+      title = "Feature associations with likelihood of entering housing subsidy program",
+      subtitle = "Continous outcomes")+
+  theme_bw()
+``` 
+
+The graphs below show density curves for our categorical variables. Density curves are a graphic representation of the distribution of a numeric variable. Peaks indicate that a higher percentage of data points are present around that peak. Some of the observations we can make by looking at these density charts include observation that the age of homeowner does not appear to have a major impact on the likelihood of someone taking the credit. However, the inflation rate does have an impact. If the inflation rate is higher at the time of the campaign the household will likely not take the credit. Conversely, if the inflation rate is low at the time of the campaign the individual will likely take the credit. A similar trend is visible for unemployment rate - when the unemployment rate is high the home owner will likely not take the credit.
+
+```{r data visualization numeric2, fig.width=14, fig.height=7}
+
+ggplot()+
+  geom_density(data=housing_data_numeric,aes(x=value,color=y))+
+  facet_wrap(~variable,scales = "free", labeller = labeller(variable = supp.labs))+
+  scale_color_manual(values=c('orange','lightgreen'),name='Enter Housing Subsidy')+
+  labs(x="Enter Housing Subsidy Program", y="Density", 
+      title = "Feature associations with likelihood of entering housing subsidy program",
+      subtitle = "Continous outcomes")+
+  theme_bw()
+
+```
+
+### Categorical Data Exploration
+
+We also review our categorical variables to determine which categorical variables result in a higher likelihood of a homeowner taking the housing subsidy. The dataset includes the following categorical variables:
+
+* **job:** Occupation of Homeowner
+* **education:**: Education attainment of homeowner
+* **marital:**: Marital status of homeowner
+* **taxLien:**: Is there a lien against the owner's property
+* **mortgage:**  Does the Homeowner have a mortgage to pay
+* **taxbill_in_phl:** Is the homeowners full time residence not in Philadelphia
+* **contact:** Have we previously contacted the homeowner
+* **month:** Moth of contact
+* **day_of_week:** Date of contact
+* **poutcome:** Outcome of previous campaign
+
+```{r select_cat_cols, include=FALSE}
+
+housing_data_cat <- housing_data %>% 
+                    select(-age,
+                           -previous, 
+                           -(unemploy_rate:spent_on_repairs),
+                           -y_numeric,
+                           -...1,
+                           -pdays,
+                           -campaign)
+
+housing_data_cat_long <- housing_data_cat %>%
+  gather(variable, value, -y) 
+
+housing_data_cat_summ <- housing_data_cat_long %>%
+  count(variable,value,y) %>%
+  left_join(., housing_data_cat_long %>% count(variable,value), by=c('variable','value'), suffix=c('value_count','total_count')) %>%
+  mutate(percent = nvalue_count / ntotal_count * 100)
+``` 
+
+The charts below show the likelihood of a home owner taking the housing subsidy for each category within each categorical variable. We express the data as a percentage in order to allow for easier comparison across categories with different sample sizes. We can observe that hte day of the contact has little impact on the likelihood of the home owner entering the housing subsidy program. However, homewoners contacted over celluar phones have a higher likelihood of entering the housing subsidy program. Individuals who are single, as well as students who do not have jobs (i.e: retired, students, unemployed) also have a higher likelihood of taking subsidy.
+
+```{r categorical_percent, fig.height=8,fig.width=12}
+
+category.labs <- c("Contact Method","Day of Contact","Education Level","Job Status","Marital Status","Month of Previous Contact","Does Homeowner Have Mortgage","Outcome of previous campaign","Full Time Resident in Philly","Tax Lien Against Property")
+names(category.labs) <- c("contact", "day_of_week","education","job","marital","month","mortgage","poutcome","taxbill_in_phl","taxLien")
+
+ggplot(data=housing_data_cat_summ, aes(x = value, y = percent, fill = y)) + 
+  geom_bar(stat = "identity")+
+  facet_wrap(~variable,scales = "free",ncol=4,labeller = labeller(variable = category.labs))+
+  scale_fill_manual(values=c('orange','lightgreen'),name='Enter Housing Subsidy')+
+  labs(y="Percent of Homeowners",x="")+
+  theme(axis.text.x = element_text(angle = 75,hjust = 1))
+```
+
+# Kitchen Sink Model
+
+As mentioned above, we will use a regression method called a logistic regression. We start by running a regression which includes ALL the categorical variables included in the sample dataset. The model includes all the categorical and quantitative variables shown in the graphs above. We split our model into a training and testing dataset. The training dataset will be used to develop the model, and the testing dataset will be used to assess the accuracy of our model.
+
+```{r data partition2, include=FALSE}
+set.seed(3456)
+housing_index <- createDataPartition(y = paste(housing_data$job, housing_data$education,housing_data$previous, housing_data$y_numeric), p = .65,
+                                  list = FALSE,
+                                  times = 1)
+
+housing_train <- housing_data[housing_index,] %>%  transform(y_numeric = as.numeric(y_numeric)) 
+housing_test  <- housing_data[-housing_index,] %>% transform(y_numeric = as.numeric(y_numeric))
+
+```
+
+## Kitchen Sink Regression Results
+
+The table below shows our regression results for the kitchen sink model. We focus on the p-value which indicates if a variable is statistically significant predictor of if a homeowner will take the housing subsidy. Most of our p-scores are above 0.05 - because the p-scores are above 0.05 a lot of predictors are not statisticaly significant predictors of a homeowner taking the subsidy.
+
+```{r logistic regression kitchen_sink, fig.height=20}
+
+housing_model <- glm(y_numeric ~ .,
+                     data = housing_train %>% 
+                     select(-y,-...1),
+                     family="binomial" (link="logit"))
+
+
+summary(housing_model)$coefficients %>%
+  kbl(col.names = c('Beta Coefficient','Standard Error','Z value','p-value')) %>%
+  kable_classic()
+
+```
+
+Another way to assess how good the kitchen sink model performs is to look at the McFadden score. McFadden scores can range from 0-1, and the higher the score the better the model. It is very hard to build a logistic model with a high McFadden score. A McFadden score with a value above 0.2 is generally considered a good logistic model in the social science domain. 
+
+``` {r macfadden_kitchensink}
+pR2(housing_model)[4]
+```
+
+
+```{r predict_kitchensink}
+
+testProbs <- data.frame(Outcome = as.factor(housing_test$y_numeric),
+                        Probs = predict(housing_model, housing_test, type= "response"))
+```
+
+Another good way to examine the accuracy of our model is to use a confusion matrix. The confusion matrix compares our predictions to the actual outcome. In the confusion matrix model, the value in the top left corner represents cases where we correctly predicted that a home owner would not take subsidy if contacted. The value in the bottom right corner indicates the number of home owners who were contacted and took the subsidy. The value in the top right, indicates individuals who were not contacted but might have taken the subsidy if contacted - these are called false negatives. The current kitchen sink model has a high number of false negatives (84). 
+
+Note that this matrix was developed by making a decision to contact individuals whose probability of taking the subsidy is above 0.5. Adjuting the threshold can have a major impact on the results - we will revisit the threshold selection latter on in the analysis.
+
+## Confusion Matrix
+
+```{r confusion_matrix_kitchensink}
+
+testProbs <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs$Probs > 0.5 , 1, 0)))
+
+kitchensink_confuse <- caret::confusionMatrix(testProbs$predOutcome, testProbs$Outcome, 
+                       positive = "1")
+
+kitchensink_confuse$table %>%
+  data.frame() %>%
+  spread(key=Reference,value=Freq) %>%
+  rename('Not_Take_Subsidy' = '0', 'Take_Subsidy' = '1') %>%
+  mutate(Total = Not_Take_Subsidy + Take_Subsidy,
+         Prediction = c('Not_Take_Subsidy','Take_Subsidy')) %>%
+  kbl() %>%
+  add_header_above(header=c(" " = 1,"Actual" = 2, " "=1)) %>%
+  kable_minimal()
+```
+
+We can also examine the sensitivity and specificity for our model.
+
+* The sensitivity is the total number of home owners who were correctly predicted to take the subsidy divided by the sum of the total number of homeowners who actually took the subsidy. For the Kitchen sink model, this would be equal to 19 / (87+19).
+
+* The specificity is total number of home owners who were correctly predicted as taking the subsidy divided by the sum of hte total number of owners who actually did not take the subsidy. For the Kitchen sink model, this would be equal to 1175 / (1175 + 19).
+
+The sensitivity and specificity for the kitchen sink model are shown in the table below. As shown, the current kitchen sink model which uses a 0.5 treshold has a high specificity and a low sensitivity. 
+
+``` {r sensitivity_specificity_kitchensink}
+
+kitchensink_confuse$byClass[1:2] %>%
+  data.frame() %>%
+  kbl(col.names=c("Accuracy Measure","Value")) %>%
+  kable_minimal()
+```
+
+# Feature Engineering
+
+In order to try to improve the sensitivity and specificity of the predictive model we generate new features which we think will be likely be more predicative than the original variables provided. In order to improve sensitivity, we strive to engineer variables where the percentage of respondents who took the subsidy is very high. 
+
+For categorical variables, this can be achieved by grouping together variables which all have a high rate of home owners taking the subsidy. For example, we create a eductaion_group variable in which all home owners with degrees are classified as having degrees. We do this because home owners with both university and professional degrees appear to have a higher likelihood of taking the subsidy. Similarly, we group all types of unemployed home owners together (i.e: students, unemployed, and retired) because all three groups of unemployed hoe owners have a higher likelihood of taking the subsidy according to previously seen categorical variable charts. Additionally, homeowners are more likely to subsidy when the month is equal to march, December, october and September.
+
+For quantitative variables, the density plots are examined to identify cutoffs at which more homeowners are more likely to take the subsidy. Homeowners are more likely to take the subsidy when the amount spent on repairs is less than 5100. Similarly, home owners are more likely to take the subsidy when the inflation is less than 2.5. Additionally, home owners are more likely to taking the housing subsidy when the umeployment rate is less than 2.5.
+
+We also applied to a log transformation to the campaign variable due to the distribution of the data. This is discussed in more detail in the histrogram section of the report. 
+
+``` {r feature_engineer}
+housing_data_mutate <- housing_data %>% mutate(
+    education_group = ifelse(education %in% c("university.degree", "professional.course", "unkown"),"degree","no_degree"),
+    job_group = ifelse(job %in% c("retired", "student","unemployed","unkown"),"un-employed","employed"),
+    inflation_bucket = case_when(
+                      inflation_rate > 2.5 ~ "More than 2.5",
+                      inflation_rate <= 2.5 ~ "Less than 2.5"),
+    spent_on_repairs_bucket = case_when(
+                      spent_on_repairs >= 5100 ~ "More than 5100",
+                      spent_on_repairs < 5100 ~ "Less than 5100"),
+    pdays_0 = ifelse(pdays == 0,"New Contact","Not New Target"),
+    campaign_log = log(campaign),
+    unemploy_rate_bucket = ifelse(unemploy_rate < -0.5,"Less than -0.5","More than -0.5"),
+    month_high = ifelse(month %in% c("mar","dec","oct",'sep'),"high_rate_month","low_rate_month"),
+    cons.conf.idx_bucket = (ifelse(cons.conf.idx > -42, "More than -42","Less than -42"))
+    )
+
+```
+
+The charts below show the percent of respondents by category for each of our engineered variables. As shown, all the new engineered variables have one category which has a higher percentage of home owners who take the subsidy. 
+
+```{r engineer_show, fig.width=10, fig.height=6}
+
+housing_data_mutate_cat <- housing_data_mutate %>% 
+                    select(education_group,
+                           job_group,
+                           pdays_0,
+                           unemploy_rate_bucket,
+                           month_high,
+                           cons.conf.idx_bucket,
+                           spent_on_repairs_bucket,
+                           y
+                           )
+
+housing_data_mutate_cat_long <-housing_data_mutate_cat %>%
+  gather(variable, value, -y) 
+
+housing_data_mutate_cat_long_summ <- housing_data_mutate_cat_long %>%
+  count(variable,value,y) %>%
+  left_join(., housing_data_mutate_cat_long %>% count(variable,value), by=c('variable','value'), suffix=c('value_count','total_count')) %>%
+  mutate(percent = nvalue_count / ntotal_count * 100)
+
+ggplot(data=housing_data_mutate_cat_long_summ, aes(x = value, y = percent, fill = y)) + 
+  geom_bar(stat = "identity")+
+  facet_wrap(~variable,scales = "free",ncol=4)+
+  scale_fill_manual(values=c('orange','lightgreen'),name='Enter Housing Subsidy')+
+  labs(y="Percent of Homeowners",x="")+
+  theme(axis.text.x = element_text(angle = 75,hjust = 1))
+```
+
+# Own Custom Model
+
+In order to try to improve the sensitivity we run a new model which includes the engineered variables in addition to some of the original variables from our housing dataset. We remove from the model variables such as age, mortgage, taxlien, and pdays as these variables do not appear to have any correlation with a home owner taking the subsidy. Next, we will examine the regression summary, mcfadden score, confusion matrix, and sensitivity and specificity for our own custom model.
+
+```{r data partition, include=FALSE}
+set.seed(3456)
+housing_index2 <- createDataPartition(y = paste(housing_data$job, housing_data$education,housing_data$previous, housing_data$y_numeric), p = .65,
+                                  list = FALSE,
+                                  times = 1)
+
+housing_train2 <- housing_data_mutate[housing_index,] %>%  transform(y_numeric = as.numeric(y_numeric)) 
+housing_test2  <- housing_data_mutate[-housing_index,] %>% transform(y_numeric = as.numeric(y_numeric))
+
+```
+
+## Own Custom Model Results
+
+The table below shows the regression results for our own model. The own model still includes a large number of existing predictors as we found that removing predictors lowered the sensitivity of the model. However, we did remove age, pdays, taxLien, taxbill_in_phl, mortgage, and education level. We add the grouped education, grouped job, pdays0, and consumer confidence bucket. Some of the categorical variables which were engineered based on continouous variable were not added to the model, as we found that adding them to the model lowered the senstivity. For this reason, we did not include the spent_on_repairs_bucket and unemploy_rate_bucket variables in our own model.
+
+```{r logistic regression own_model}
+
+housing_model2 <- glm(y_numeric ~ .,
+                     data = housing_data_mutate %>% select(-y, -...1, -age, -pdays, -taxLien, -taxbill_in_phl, -mortgage, -education, -job_group, -month_high, -unemploy_rate_bucket, -marital , -campaign_log, -spent_on_repairs_bucket),
+                     family="binomial" (link="logit"))
+
+summary(housing_model2)$coefficients %>%
+  kbl(col.names = c('Beta Coefficient','Standard Error','Z value','p-value')) %>%
+  kable_classic()
+
+```
+
+The Mcfadden value for our own model is 0.22. This is lower than the kitchen sink model, but this value is still considered a good Mcfadden value for a model as the value is above 0.20. The slight decrease in McFadden is not a major concern as examining the sensitivity and specificity metrics as the most important measures for examining model accuracy. 
+
+``` {r mcfadden_own_model}
+pR2(housing_model2)[4]
+
+```
+
+```{r predict_own_model}
+
+testProbs2 <- data.frame(Outcome = as.factor(housing_test2$y_numeric),
+                        Probs = predict(housing_model2, housing_test2, type= "response"))
+```
+
+## Confusion Matrix
+
+The confusion matrix for our own model shows improvements over the kitchen sink model.The number of howeowners who are correctly predicted to take the subsidy goes by one and is now 20 instead of 10. The number of homeowners who are incorrectly predicted to take the subsidy also declines from 24 to 11 due to the inclusion of the new engineered variables and removing variables which do not correlate with home owners taking the subsidy.
+
+```{r confusion_matrix_own_model}
+
+testProbs2 <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 0.5 , 1, 0)))
+
+ownmodel_confuse <- caret::confusionMatrix(testProbs2$predOutcome, testProbs2$Outcome, 
+                       positive = "1")
+
+ownmodel_confuse$table %>%
+  data.frame() %>%
+  spread(key=Reference,value=Freq) %>%
+  rename('Not_Take_Subsidy' = '0', 'Take_Subsidy' = '1') %>%
+  mutate(Total = Not_Take_Subsidy + Take_Subsidy,
+         Prediction = c('Not_Take_Subsidy','Take_Subsidy')) %>%
+  kbl() %>%
+  add_header_above(header=c(" " = 1,"Actual" = 3)) %>%
+  kable_minimal()
+```
+
+Both our sensitivity and specificity are higher for our own model are higher than the kitchen sink model. The sensitivity of our own model using the same treshold is 1% higher. The specificity for own model is also 1% percent higher.
+
+``` {r sensitivity_specificity_own_model}
+
+ownmodel_confuse$byClass[1:2] %>%
+  data.frame() %>%
+  kbl(col.names=c("Accuracy Measure","Value")) %>%
+  kable_minimal()
+```
+
+# Cross Validation of Models
+
+Cross Validating the model involves running both the kitchen sink model and our custom model multiple times using different training and testing datasets so see if there are changes in sensitivity and specificity when running the model with different data. Both the kitchen sink model and our custom model have similar mean sensitivity and specificity. However, the mean specificity is slightly higher for our custom model, providing additional evidence that our custom model is a slightly improvement over the kitchen sink model.
+
+```{r cv_kitchensink, warning=FALSE, message=FALSE, fig.height=6, fig.width=10}
+ctrl <- trainControl(method = "cv", number = 100, classProbs=TRUE, summaryFunction=twoClassSummary)
+
+cvFit <- train(y ~ .,
+                     data = housing_data %>% 
+                     dplyr::select(-y_numeric,-...1), 
+                method="glm", family="binomial",
+                metric="ROC", trControl = ctrl)
+
+cvFit1_results <- dplyr::select(cvFit$resample, -Resample) %>%
+                          gather(metric, value) %>%
+                          left_join(gather(cvFit$results[2:4], metric, mean))
+
+cvFit2 <- train(y ~ .,
+                     data = housing_data_mutate %>% 
+                     select(-y_numeric, -...1, -age, -pdays, -taxLien, -taxbill_in_phl, -mortgage, -education, -job_group, -month_high, -unemploy_rate_bucket, -marital , -campaign_log, -spent_on_repairs_bucket), 
+                method="glm", family="binomial",
+                metric="ROC", trControl = ctrl)
+
+cvFit2_results <- dplyr::select(cvFit2$resample, -Resample) %>%
+                          gather(metric, value) %>%
+                          left_join(gather(cvFit2$results[2:4], metric, mean))
+
+grid.arrange(ncol=1,
+ cvFit1_results %>%
+  ggplot(aes(value)) + 
+    geom_histogram(bins=50, fill = "lightblue") +
+    facet_wrap(~metric,labeller = as_labeller(c("ROC"="Area Under the Curve","Sens"="Specificty",
+                                  "Spec"="Sensitivity"))) +
+    geom_vline(aes(xintercept = mean), colour = "purple", linetype = 3, size = 1.5) +
+    #scale_x_continuous(limits = c(0, 1)) +
+    scale_y_continuous(limits = c(0, 60))+ 
+    labs(x="Goodness of Fit", y="Count", title="Cross Validation Goodness of Fit Metrics - Kitchen Sink Model",
+         subtitle = "Across-fold mean reprented as dotted lines")+
+   theme_bw(),
+
+cvFit2_results %>%
+  ggplot(aes(value)) + 
+    geom_histogram(bins=50, fill = "lightblue") +
+    facet_wrap(~metric,labeller = as_labeller(c("ROC"="Area Under the Curve","Sens"="Specificity",
+                                  "Spec"="Sensitivity"))) +
+    geom_vline(aes(xintercept = mean), colour = "purple", linetype = 3, size = 1.5) +
+    #scale_x_continuous(limits = c(0, 1)) +
+    scale_y_continuous(limits = c(0, 60))+
+    labs(x="Goodness of Fit", y="Count", title="Cross Validation Goodness of Fit Metrics - Own Custom Model",
+         subtitle = "Across-fold mean reprented as dotted lines")+
+  theme_bw()
+)
+```
+
+# ROC Curve
+
+Having determined that our custom model is an improvement over the kitchen sink model, the next step is to determine the threshold we want to use for identifying who to contact about the housing subsidy program. Lowering the threshold will increase the sensitivity and decrease specificity of the results. To determine the optimal threshold, we start by examining the ROC curve which plots the True Positive fraction against the False positive fraction. 
+
+From ROC curve, we can observe the importance of trade off in the analysis, when we select a higher threshold the percentage of home owners who we predict as taking the subsidy who will actually take the subsidy increases (True Positive). However, the proportion of home owners who are predicted as not taking the subsidy but actually would also increases (i.e: False positive). When selecting our treshold we want to try to optimize public revenue. The next section will explain how to select a threshold which provides the greatest public benefit.
+
+It is also important to note that despite our models limitations, it is still a step above contacting individuals at random. The grey line shown below shows what an ROC curve would look like if individuals were contacted at random. 
+
+```{r roc_curve, warning = FALSE, message = FALSE}
+ggplot(testProbs2, aes(d = as.numeric(Outcome), m = Probs)) +
+  geom_roc(n.cuts = 50, labels = FALSE, colour = "orange") +
+  style_roc(theme = theme_grey) +
+  geom_abline(slope = 1, intercept = 0, size = 1, color = 'grey60') +
+  labs(title = "ROC Curve - Housing Subsidy Model")+
+  theme_bw()
+```
+
+# Cost Benifit Analysis
+
+## Cost Benifit Equation
+
+The information provided to us by the HCD indicates that the cost of contacting a homeowner is 2,850 USD. This cost includes the cost of resources to facilitate mailers, phone calls, and information/counseling sessions at the HCD offices. When we select a lower threshold, the amount HCD will need to spend on mailers will increase. The cost of mailers is our program cost.
+
+However, when more mailers are sent the number of people who register for the credit will also increases. HCD has told us that 25% percent of the people contacted eligible homeowners actually receive the credit. Each household which revives the credit has their home increase by approximately 10,000 USD. The value of the surrounding the home also increase by 56,000. Thus, the total benefit of one person taking the credit is an increase in property value of 66,000 USD. 
+
+The analysis also needs to consider that if a homeowner is not contacted, they are unlikely to sign up for the credit program. Each homeowner who who would have signed up for the credit program if they were contacted but does not because they were never contacted results in a loss of 66,000 USD in property value (10,000 USD + 56,000 USD).
+
+The formulas below show the cost of a True Positive, False Positive, and a False Negative. In all cases x indicates the number of outcomes:
+
+* **True Positive:** $Cost = (x10,000 + x56,000)*0.25 - x2,850$
+
+* **False Positive:** $Cost = -x2850$
+
+* **False Negative:** $Cost = -(x10,000 + x56,000)*0.25$
+
+There are no costs associated with correctly predicting that someone would not take the credit (i.e: false negative).
+
+The Matrix below shows an example of what the cost in USD would be for each outcome in a situation where there is 1 True Positive, 1 False Positives, and 1 False Negative. In this example, the net cost would be equal to -14,250 USD which is calculated by summing together the values in each corner of the confusion matrix.
+
+```{r example_matrix}
+
+x = 1
+
+TP = (x * 10000 + x * 56000)*0.25 - (x * 2850)
+FN = -(x * 10000 + x * 56000)*0.25
+FP = -4 * 2850
+TN = 0
+
+cost = TP + FN + FP + TN
+
+Take_subsidy = c(FN, TP)
+Not_Take_Subsidy = c(TN, FP)
+
+data.frame(Prediction = c('Not_Take_Subsidy','Take_Subsidy'),Not_Take_Subsidy, Take_subsidy) %>%
+  kbl() %>%
+  add_header_above(header=c(" " = 1,"Actual" = 2)) %>%
+  kable_minimal()
+
+```
+
+## Identifying the optimal treshold
+
+The table below presents the estimated increase in property value from the true positives, loss of potential gain in property value from false negatives, and outreach costs when using different thresholds. The Net Revenue shows the sum of the other three columns. Due to the high cost of outreach, and loss of property value from false negatives all thresholds result in negative revenue. Of the 10 thresholds shown the one which minimizes the loss in revenue is a threshold of 90.
+
+```{r optimal threshold function, results="hide"}
+results_sens_10 <- vector()
+results_sens_01 <- vector()
+results_sens_11 <- vector()
+
+for (i in seq(1,10,1)){
+  print(i)
+   
+  t <- testProbs %>% mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 1-(i/10) , 1, 0)))
+  table_confuse <-  caret::confusionMatrix(t$predOutcome, t$Outcome, positive = "1")
+  results_sens_10[i]<- table_confuse$table[2]
+  results_sens_01[i]<- table_confuse$table[3]
+  results_sens_11[i]<- table_confuse$table[4]
+}
+```
+
+```{r cost_matrix}
+total_rev_11 <- (results_sens_11*10000 + results_sens_11*56000)*0.25
+
+total_cost_11 <- -(results_sens_11*2850)
+
+#01 is the foregone revenue which we will treat as cost
+total_cost_01 <- -(results_sens_01*10000 + results_sens_01*56000)*0.25
+
+total_cost_10 <- -(results_sens_10*2850)
+
+cost <- total_cost_11 + total_cost_10
+
+lost_revenue <- total_cost_01
+
+revenue <- total_rev_11
+
+net <- revenue + lost_revenue + cost
+
+total_credits_given <- round((results_sens_11*0.25),0)
+
+data.frame(threshold_in_pct = seq(10,100,10),revenue,lost_revenue,cost,net) %>%
+  kbl(col.name=c("Treshold","Increase Property Value (USD)","Lost Property value (USD)","Cost of Outreach (USD)","Net Revenue (USD)")) %>%
+  kable_classic()
+```
+
+The graph below show the number of true positives, false positives, and false negatives at different thresholds. We observe that the first threshold where the number of true positives exceeds the number of false negatives is a threshold of 90. This further supports our concussion that ninety is an appropriate threshold to select because it maximizes the number of true positives while minimizing the number of false negatives. Maximizing true positives helps maximize revenue, while minimizing lost revenue.
+
+```{r chart_positives}
+
+results <- data.frame(threshold_in_pct = seq(10,100,10),
+                     True_positive=results_sens_11,
+                     False_negative=results_sens_01,
+                     False_positive=results_sens_10) %>%
+  gather(variable,value,-threshold_in_pct)
+
+ggplot(results, aes(x = threshold_in_pct, y= value, color = variable)) + 
+  geom_line(stat='identity')+
+  geom_point(stat='identity')+
+  scale_color_manual(values=c("blue","purple","grey50"),name="Type")+
+  labs(x="Count",y="Treshold")+
+  theme_bw()
+```
+
+The graphs below show the net loss of revenue by threshold and the number of credits given out at each threshold. We can again observe that our selected threshold of 90 has the lowest net public loss. 
+
+``` {r make_chart}
+results_final <- data.frame(threshold_in_pct = seq(10,100,10),
+                            net_public_loss = -1*net ,
+                            total_credits_given = total_credits_given)
+
+grid.arrange(ncol=2,
+ggplot(data = results_final, aes(x = threshold_in_pct, y = net_public_loss)) +
+  geom_bar(stat='identity',fill='orange')+
+  theme_bw()+
+  scale_x_continuous(breaks = c(0,10,20,30,40,50,60,70,80,90,100))+
+  labs(y='Net Loss (USD)',x='Threshold')+
+  ggtitle("Net Loss by Threshold")+
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank()),
+
+ggplot(data = results_final, aes(x = threshold_in_pct, y = total_credits_given)) +
+  geom_bar(stat='identity',fill='lightblue')+
+  theme_bw()+
+  scale_x_continuous(breaks = c(0,10,20,30,40,50,60,70,80,90,100))+
+  labs(y='Total Credits Given',x='Threshold')+
+  ggtitle("Number of Credits Givenby Treshold")+
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank())
+)
+
+```
+The table below compares the net loss and the number of credits given from using our selected threshold of ninety and the default threshold of fifty. We can observe that adjusting the threshold results in a larger number of homeowners taking the credit and a lower net public loss when compared to the default treshold of 50.
+
+```{r table}
+
+results_final %>%
+  dplyr::filter(threshold_in_pct %in% c(90,50)) %>%
+  kbl(col.names = c("Treshold","Net Loss","Credits Given")) %>%
+  kable_classic()
+```
+
+# Conclusion
+
+It is recommended that this model be used in production as it is likely better than contacting home owners at random. A major limitation of the model is that in order to get a low number of false negatives it was necessary to select a high threshold. The high threshold results in HCD needing to spend money on outreach to a larger number of individuals in order to ensure that the majority of individuals who are likely to sign up for the housing subsidy are contacted. Contacting a larger number of individuals results in higher costs for HCD on outreach. However, contacting more people should result in more people signing up for the credit resulting in increased property values which aligns with HCD's interests.
+
+It is recommended that HCD also consider repeating this exercise using a sample which contains an equal number of home owners who took the home credit and home owners who did not take the credit. Developing a logistic model is a challenge when using a dataset which contains a very uneven number of positive and negative outcomes. Having a dataset with a more equal number of positive and negative outcomes should improve the predicative power of the model.
+
+
+
+

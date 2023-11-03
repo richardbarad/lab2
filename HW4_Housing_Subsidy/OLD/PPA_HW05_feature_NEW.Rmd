@@ -1,0 +1,414 @@
+---
+title: "People Based ML - Serving Facebook Ads"
+author: "Michael Fichman, Matt Harris & Ken Steif"
+date: "October 13,2023"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen = 999)
+
+library(tidyverse)
+library(caret)
+library(ckanr)
+library(FNN)
+library(kableExtra)
+library(grid)
+library(viridisLite)
+library(viridis)
+library(gridExtra)
+library(jtools)
+library(kableExtra)
+library(jtools)     
+library(ggstance) 
+library(ggpubr)   
+library(broom.mixed) 
+library(pscl)
+library(pROC)
+library(plotROC)
+library(DT)
+
+palette5 <- c("#981FAC","#CB0F8B","#FF006A","#FE4C35","#FE9900")
+palette4 <- c("#981FAC","#FF006A","#FE4C35","#FE9900")
+palette2 <- c("#981FAC","#FF006A")
+
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
+```
+
+# Data
+
+```{r data import, include=FALSE}
+housing_data <- 
+  read_csv("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/Chapter6/housingSubsidy.csv") %>%
+  mutate(pdays = as.numeric(ifelse(pdays == '999','0',pdays)))
+```
+
+# Data Exploration
+
+```{r data exploration numeric, include=FALSE}
+housing_data_numeric <- housing_data %>% 
+                        na.omit() %>%
+                        select(y, 
+                               age, 
+                               previous, 
+                               unemploy_rate, 
+                               cons.price.idx, 
+                               cons.conf.idx,
+                               inflation_rate, 
+                               spent_on_repairs,
+                               campaign,
+                               pdays) %>%
+                               pivot_longer(cols = -y,
+                                             names_to = "variable")
+  
+housing_data_numeric_summary <- housing_data_numeric %>%
+                                group_by(y, variable) %>%
+                                summarise(mean = mean(value))
+```
+
+```{r data visualization numeric2}
+
+ggplot()+
+  geom_density(data=housing_data_numeric,aes(x=value,color=y))+
+  facet_wrap(~variable,scales = "free")+
+  scale_color_manual(values=c('lightgreen','orange'))+
+  theme_bw()
+
+```
+
+```{r histograms}
+ggplot()+
+  geom_histogram(data=housing_data_numeric,aes(x=value),bins=100)+
+  facet_wrap(~variable,scales = "free")+
+  theme_bw()
+```
+
+
+```{r data_visualization_numeric}
+
+ggplot(data=housing_data_numeric_summary,aes(x=y,y=mean,fill=y))+
+  geom_bar(stat='identity')+
+  facet_wrap(~variable,scales = "free")+
+  scale_fill_manual(values=c('orange','lightgreen'),name='Enter Housing Subsidy')+
+  labs(x="Enter Housing Subsidy Program", y="Mean Value", 
+      title = "Feature associations with likelihood of entering housing subsidy program",
+      subtitle = "Continous outcomes")+
+  theme_bw()
+``` 
+
+
+``` {r feature_engineer}
+housing_data <- housing_data %>% mutate(
+    education_group = ifelse(education %in% c("university.degree", "professional.course", "unkown"),"degree","no_degree"),
+    job_group = ifelse(job %in% c("retired", "student","unemployed","unkown"),"un-employed","employed"),
+    season = case_when(month %in% c("mar", "apr", "may") ~ "late spring",
+                      month %in% c("jun", "jul", "aug") ~ "summer",
+                      month %in% c("sep", "oct") ~ "autumn",
+                      month %in% c("nov", "dec") ~ "autumn"),
+    inflation_bucket = case_when(
+                      inflation_rate > 2.5 ~ "More than 2.5",
+                      inflation_rate <= 2.5 ~ "Less than 2.5"),
+    spent_on_repairs_bucket = case_when(
+                      spent_on_repairs >= 5100 ~ "More than 5100",
+                      spent_on_repairs < 5100 ~ "Less than 5100"),
+    pdays_0 = ifelse(pdays == 0,"New Contact","Not New Target"),
+    campaign_log = log(campaign),
+    unemploy_rate_bucket = ifelse(unemploy_rate < -0.5,"Less than -0.5","More than -0.5"),
+    month_high = ifelse(month %in% c("mar","dec","oct",'sep'),"high_rate_month","low_rate_month"),
+    cons.conf.idx_bucket = (ifelse(cons.conf.idx > -42, "More than -42","Less than -42"))
+    )
+
+```
+
+
+```{r select_cat_cols, include=FALSE}
+
+housing_data_cat <- housing_data %>% 
+                    select(-age,
+                           -previous, 
+                           -(unemploy_rate:spent_on_repairs),
+                           -y_numeric,
+                           -...1,
+                           -pdays,
+                           -campaign)
+
+housing_data_cat_long <- housing_data_cat %>%
+  gather(variable, value, -y) 
+
+housing_data_cat_summ <- housing_data_cat_long %>%
+  count(variable,value,y) %>%
+  left_join(., housing_data_cat_long %>% count(variable,value), by=c('variable','value'), suffix=c('value_count','total_count')) %>%
+  mutate(percent = nvalue_count / ntotal_count * 100)
+``` 
+
+```{r data visualization categorical_percent, fig.height=7,fig.width=9}
+
+ggplot(data=housing_data_cat_summ, aes(x = value, y = percent, fill = y)) + 
+  geom_bar(stat = "identity")+
+  facet_wrap(~variable,scales = "free")+
+  scale_fill_manual(values=c('orange','lightgreen'))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r data visualization categorical2, fig.height=7,fig.width=9}
+
+ggplot(data=housing_data_cat_summ, aes(x = value, y = nvalue_count, fill = y)) + 
+  geom_bar(stat = "identity")+
+  facet_wrap(~variable,scales = "free")+
+  scale_fill_manual(values=c('orange','lightgreen'))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r data partition, include=FALSE}
+set.seed(3456)
+housing_index <- createDataPartition(y = paste(housing_data$job, housing_data$education,housing_data$previous, housing_data$y_numeric), p = .65,
+                                  list = FALSE,
+                                  times = 1)
+
+housing_train <- housing_data[housing_index,] %>%  transform(y_numeric = as.numeric(y_numeric)) 
+housing_test  <- housing_data[-housing_index,] %>% transform(y_numeric = as.numeric(y_numeric))
+
+```
+
+
+```{r logistic regression kitchen_sink}
+
+housing_model <- glm(y_numeric ~ .,
+                     data = housing_train %>% 
+                     select(-y,-...1,-job_group,-education_group,-season, -cons.conf.idx_bucket, -unemploy_rate_bucket, -month_high, -campaign_log, -pdays_0, -spent_on_repairs_bucket, -inflation_bucket),
+                     family="binomial" (link="logit"))
+
+summary(housing_model)
+
+```
+
+
+
+``` {r macfadden_kitchensink}
+pR2(housing_model)
+```
+
+```{r predict_kitchensink}
+
+testProbs <- data.frame(Outcome = as.factor(housing_test$y_numeric),
+                        Probs = predict(housing_model, housing_test, type= "response"))
+```
+
+```{r confusion_matrix_kitchensink}
+
+testProbs <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs$Probs > 0.5 , 1, 0)))
+
+caret::confusionMatrix(testProbs$predOutcome, testProbs$Outcome, 
+                       positive = "1")
+```
+
+```{r logistic regression own_model}
+
+housing_model2 <- glm(y_numeric ~ .,
+                     data = housing_data %>% select(-y, -...1),
+                     family="binomial" (link="logit"))
+
+summary(housing_model2)
+
+```
+
+``` {r mcfadden_own_model}
+pR2(housing_model2)
+
+```
+
+```{r predict_own_model}
+
+testProbs2 <- data.frame(Outcome = as.factor(housing_test$y_numeric),
+                        Probs = predict(housing_model2, housing_test, type= "response"))
+```
+
+```{r confusion_matrix_own_model}
+
+testProbs2 <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 0.5 , 1, 0)))
+
+caret::confusionMatrix(testProbs2$predOutcome, testProbs2$Outcome, 
+                       positive = "1")
+```
+
+
+```{r density plot predictions}
+ggplot(testProbs2, aes(x = Probs, fill = as.factor(Outcome))) + 
+  geom_density() +
+  facet_grid(Outcome ~ .) +
+  scale_fill_manual(values = palette2) +
+  labs(x = "Click", y = "Density of probabilities",
+       title = "Distribution of predicted probabilities by observed outcome") +
+  theme(strip.text.x = element_text(size = 18),
+        legend.position = "none")
+```
+
+With the above, we get this confusion matrix:
+```{r confusion_matrix own}
+testProbs2 <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 0.5 , 1, 0)))
+
+a <- caret::confusionMatrix(testProbs2$predOutcome, testProbs2$Outcome, 
+                       positive = "1")
+a
+
+```
+
+Our goal is to minimize false negative and true negative. We write a function for that:
+```{r optimal threshold function}
+results_sens_10 <- vector()
+
+for (i in seq(1,10,1)){
+  print(i)
+   
+  t <- testProbs %>% mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 1-(i/10) , 1, 0)))
+  results_sens_10[i] <-  caret::confusionMatrix(t$predOutcome, t$Outcome, positive = "1")$table[2]
+}
+
+results_sens_10
+
+
+results_sens_01 <- vector()
+
+for (i in seq(1,10,1)){
+  print(i)
+   
+  t <- testProbs %>% mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 1-(i/10) , 1, 0)))
+  results_sens_01[i] <-  caret::confusionMatrix(t$predOutcome, t$Outcome, positive = "1")$table[3]
+}
+
+results_sens_01
+
+
+results_sens_11 <- vector()
+
+for (i in seq(1,10,1)){
+  print(i)
+   
+  t <- testProbs %>% mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 1-(i/10) , 1, 0)))
+  results_sens_11[i] <-  caret::confusionMatrix(t$predOutcome, t$Outcome, positive = "1")$table[4]
+}
+
+results_sens_11
+
+
+
+total_rev_11 <- results_sens_11*250 + results_sens_11*10000 + results_sens_11*20000
+total_rev_11
+
+total_cost_11 <- -(results_sens_11*2850)
+total_cost_11
+
+#01 is the foregone revenue which we will treat as cost
+total_cost_01 <- -(results_sens_01*250 + results_sens_01*10000 + results_sens_01*20000)
+total_cost_01
+
+total_cost_10 <- -(results_sens_10*2850)
+total_cost_10
+
+net <- total_rev_11 + total_cost_11 + total_cost_01 + total_cost_10
+net_cost <-
+
+cost <- total_cost_11 + total_cost_01 + total_cost_10
+revenue <- total_rev_11
+
+data.frame()
+
+total_credits_given <- results_sens_11
+total_credits_given
+
+data.frame(threshold_in_pct = seq(10,100,10),revenue,cost,net_cost) %>%
+  kbl(col.name=c("Treshold","Revenue (USD)","Cost (USD)","Net Cost (USD)")) %>%
+  kable_classic()
+```
+
+``` {r make_chart}
+results_final <- data.frame(threshold_in_pct = seq(10,100,10),
+                            net_public_loss = -1*net ,
+                            total_credits_given = total_credits_given)
+results_final
+
+grid.arrange(ncol=2,
+ggplot(data = results_final, aes(x = threshold_in_pct, y = net_public_loss)) +
+  geom_bar(stat='identity',fill='orange')+
+  theme_bw()+
+  labs(y='Net Public Loss',x='Treshold'),
+ggplot(data = results_final, aes(x = threshold_in_pct, y = total_credits_given)) +
+  geom_bar(stat='identity',fill='lightblue')+
+  theme_bw()+
+  labs(y='Total Credits Given',x='Treshold')
+)
+
+```
+```{r table}
+
+results_final %>%
+  dplyr::filter(threshold_in_pct %in% c(90,50)) %>%
+  kbl(col.names = c("Treshold","Net Public Loss","Credits Given")) %>%
+  kable_classic()
+```
+
+```{r chart_positives}
+
+results <- data.frame(threshold_in_pct = seq(10,100,10),
+                     True_positive=results_sens_11,
+                     False_negative=results_sens_01,
+                     False_positive=results_sens_10) %>%
+  gather(variable,value,-threshold_in_pct)
+
+ggplot(results, aes(x = threshold_in_pct, y= value, fill = variable)) + 
+  geom_bar(stat='identity')+
+  scale_fill_viridis_d()+
+  theme_bw()
+```
+
+
+```{r confusion_matrix own optimal threshold}
+testProbs3 <- data.frame(Outcome = as.factor(housing_test$y_numeric),
+                        Probs = predict(housing_model2, housing_test, type= "response"))
+
+testProbs3 <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs3$Probs > 0.1 , 1, 0)))
+
+caret::confusionMatrix(testProbs3$predOutcome, testProbs3$Outcome, 
+                       positive = "1")
+```
+
+```{r optimal threshold density plot predictions}
+ggplot(testProbs3, aes(x = Probs, fill = as.factor(Outcome))) + 
+  geom_density() +
+  facet_grid(Outcome ~ .) +
+  scale_fill_manual(values = palette2) +
+  labs(x = "Click", y = "Density of probabilities",
+       title = "Distribution of predicted probabilities by observed outcome") +
+  theme(strip.text.x = element_text(size = 18),
+        legend.position = "none")
+```
+
+```{r auc, message = FALSE, warning = FALSE}
+auc(testProbs3$Outcome, testProbs3$Probs)
+```
+
+```{r roc_curve, warning = FALSE, message = FALSE}
+ggplot(testProbs3, aes(d = as.numeric(Outcome), m = Probs)) +
+  geom_roc(n.cuts = 50, labels = FALSE, colour = "#FE9900") +
+  style_roc(theme = theme_grey) +
+  geom_abline(slope = 1, intercept = 0, size = 1.5, color = 'grey') +
+  labs(title = "ROC Curve - clickModel")
+```
+
+
+

@@ -1,0 +1,244 @@
+---
+title: "People Based ML - Serving Facebook Ads"
+author: "Michael Fichman, Matt Harris & Ken Steif"
+date: "October 13,2023"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen = 999)
+
+library(tidyverse)
+library(caret)
+library(ckanr)
+library(FNN)
+library(kableExtra)
+library(grid)
+library(viridisLite)
+library(viridis)
+library(gridExtra)
+library(jtools)
+library(kableExtra)
+library(jtools)     
+library(ggstance) 
+library(ggpubr)   
+library(broom.mixed) 
+library(pscl)
+library(pROC)
+
+palette5 <- c("#981FAC","#CB0F8B","#FF006A","#FE4C35","#FE9900")
+palette4 <- c("#981FAC","#FF006A","#FE4C35","#FE9900")
+palette2 <- c("#981FAC","#FF006A")
+
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
+```
+
+# Data
+
+```{r data import, include=FALSE}
+housing_data <- 
+  read_csv("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/Chapter6/housingSubsidy.csv") %>%
+  mutate(pdays = as.numeric(ifelse(pdays == '999','0',pdays)))
+```
+
+# Data Exploration
+
+```{r data exploration numeric, include=FALSE}
+housing_data_numeric <- housing_data %>% 
+                        na.omit() %>%
+                        select(y, 
+                               age, 
+                               previous, 
+                               unemploy_rate, 
+                               cons.price.idx, 
+                               cons.conf.idx,
+                               inflation_rate, 
+                               spent_on_repairs,
+                               campaign,
+                               pdays) %>%
+                               pivot_longer(cols = -y,
+                                             names_to = "variable")
+  
+housing_data_numeric_summary <- housing_data_numeric %>%
+                                group_by(y, variable) %>%
+                                summarise(mean = mean(value))
+```
+
+```{r data visualization numeric2}
+
+ggplot()+
+  geom_density(data=housing_data_numeric,aes(x=value,color=y))+
+  facet_wrap(~variable,scales = "free")+
+  scale_color_manual(values=c('lightgreen','orange'))+
+  theme_bw()
+
+```
+
+```{r data visualization numeric2}
+ggplot()+
+  geom_histogram(data=housing_data_numeric,aes(x=value),bins=100)+
+  facet_wrap(~variable,scales = "free")+
+  theme_bw()
+```
+
+
+```{r data visualization numeric}
+
+ggplot(data=housing_data_numeric_summary,aes(x=y,y=mean,fill=y))+
+  geom_bar(stat='identity')+
+  facet_wrap(~variable,scales = "free")+
+  scale_fill_manual(values=c('orange','lightgreen'),name='Enter Housing Subsidy')+
+  labs(x="Enter Housing Subsidy Program", y="Mean Value", 
+      title = "Feature associations with likelihood of entering housing subsidy program",
+      subtitle = "Continous outcomes")+
+  theme_bw()
+``` 
+
+```{r data exploration categorical, include=FALSE}
+housing_data_cat <- housing_data %>% 
+                    select(-age,
+                           -previous, 
+                           -(unemploy_rate:spent_on_repairs),
+                           -y_numeric)
+
+unique_vals <- list()
+for (i in colnames(housing_data_cat)) {
+  unique_vals[i] <- housing_data_cat[i] %>% unique()
+  print(unique_vals[i])
+}
+
+housing_data <- housing_data %>% mutate(
+    education_group = 
+    case_when(education == "unknown" ~ "unknown",
+              education %in% c("university.degree", "professional.course","high.school") ~ "high school+",
+              education %in% c("basic.9y","basic.6y","basic.4y","illiterate") ~ "non-high school"),
+    job_group = case_when(job %in% c("services", "admin.", "management") ~ "white-collar",
+                    job %in% c("blue-collar",   "housemaid", "technician") ~ "blue-collar",
+                    job %in% c("self-employed",   "entrepreneur") ~ "self-employed",
+                    job %in% c("student", "unemployed", "unknown") ~ "not employed", 
+                    job %in% c("retired") ~ "retired"),
+    season = case_when(month %in% c("mar", "apr", "may") ~ "late spring",
+                      month %in% c("jun", "jul", "aug") ~ "summer",
+                      month %in% c("sep", "oct") ~ "autumn",
+                      month %in% c("nov", "dec") ~ "autumn")) 
+```
+
+
+```{r data visualization categorical, include=FALSE}
+
+housing_data_cat <- housing_data %>% 
+                    select(-age,
+                           -previous, 
+                           -(unemploy_rate:spent_on_repairs),
+                           -y_numeric,
+                           -...1,
+                           -pdays,
+                           -campaign,
+                           -education,
+                           -job)
+
+housing_data_cat_long <- housing_data_cat %>%
+  gather(variable, value, -y) 
+
+housing_data_cat_summ <- housing_data_cat_long %>%
+  count(variable,value,y) %>%
+  left_join(., housing_data_cat_long %>% count(variable,value), by=c('variable','value'), suffix=c('value_count','total_count')) %>%
+  mutate(percent = nvalue_count / ntotal_count * 100)
+``` 
+
+```{r data visualization categorical, fig.height=7,fig.width=9}
+
+ggplot(data=housing_data_cat_summ, aes(x = value, y = percent, fill = y)) + 
+  geom_bar(stat = "identity")+
+  facet_wrap(~variable,scales = "free")+
+  scale_fill_manual(values=c('orange','lightgreen'))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r data visualization categorical, fig.height=7,fig.width=9}
+
+ggplot(data=housing_data_cat_summ, aes(x = value, y = nvalue_count, fill = y)) + 
+  geom_bar(stat = "identity")+
+  facet_wrap(~variable,scales = "free")+
+  scale_fill_manual(values=c('orange','lightgreen'))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r data partition, include=FALSE}
+set.seed(3456)
+housing_index <- createDataPartition(y = paste(housing_data$job, housing_data$education,housing_data$previous, housing_data$y_numeric), p = .65,
+                                  list = FALSE,
+                                  times = 1)
+
+housing_train <- housing_data[housing_index,] %>%  transform(y_numeric = as.numeric(y_numeric)) 
+housing_test  <- housing_data[-housing_index,] %>% transform(y_numeric = as.numeric(y_numeric))
+
+```
+
+
+```{r logistic regression kitchen_sink}
+
+housing_model <- glm(y_numeric ~ .,
+                     data = housing_train %>% 
+                     select(-y,-...1,-job_group,-education_group,-season),
+                     family="binomial" (link="logit"))
+
+summary(housing_model)
+
+```
+
+
+
+``` {r macfadden_kitchensink}
+pR2(housing_model)
+```
+
+```{r logistic regression kitchen_sink}
+
+testProbs <- data.frame(Outcome = as.factor(housing_test$y_numeric),
+                        Probs = predict(housing_model, housing_test, type= "response"))
+```
+
+```{r confusion_matrix}
+
+testProbs <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs$Probs > 0.5 , 1, 0)))
+
+caret::confusionMatrix(testProbs$predOutcome, testProbs$Outcome, 
+                       positive = "1")
+```
+
+```{r logistic regression kitchen_sink}
+
+housing_model2 <- glm(y_numeric ~ .,
+                     data = housing_data %>% select(contact,unemploy_rate,y_numeric,cons.price.idx,cons.conf.idx,poutcome,education_group),
+                     family="binomial" (link="logit"))
+
+summary(housing_model2)
+pR2(housing_model2)
+
+```
+
+```{r logistic regression kitchen_sink}
+
+testProbs2 <- data.frame(Outcome = as.factor(housing_test$y_numeric),
+                        Probs = predict(housing_model2, housing_test, type= "response"))
+```
+
+```{r confusion_matrix}
+
+testProbs2 <- 
+  testProbs %>%
+  mutate(predOutcome  = as.factor(ifelse(testProbs2$Probs > 0.5 , 1, 0)))
+
+caret::confusionMatrix(testProbs2$predOutcome, testProbs2$Outcome, 
+                       positive = "1")
+```
