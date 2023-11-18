@@ -81,7 +81,7 @@ We start by exploring the continuous data in the dataset provided. The continuou
 * **campaign**: # of contacts for this individual for this campaign
 * **pdays**: 	# days after ind. last contacted from a previous program (Note: In the dataset provided, the number 999 indicates that the client had never been contacted before - we convert 999 to 0 and make pdays a numeric variable)
 
-```{r data exploration numeric}
+```{r data exploration numeric, results='hide',warning=FALSE, message=FALSE}
 housing_data_numeric <- housing_data %>% 
                         na.omit() %>%
                         select(y, 
@@ -596,13 +596,15 @@ ggplot(results, aes(x = threshold_in_pct, y= value, color = variable)) +
   geom_line(stat='identity')+
   geom_point(stat='identity')+
   scale_color_manual(values=c("blue","purple","grey50"),name="Type")+
-  labs(x="Count",y="Treshold")+
+  labs(x="Treshold",y="Count")+
+  scale_x_continuous(breaks = c(0,10,20,30,40,50,60,70,80,90,100))+
+  theme(panel.grid.minor.x = element_blank())+
   theme_bw()
 ```
 
 The graphs below show the net loss of revenue by threshold and the number of credits given out at each threshold. We can again observe that our selected threshold of 90 has the lowest net public loss. 
 
-``` {r make_chart}
+``` {r make_chart, fig.width=10, fig.height=5}
 results_final <- data.frame(threshold_in_pct = seq(10,100,10),
                             net_public_loss = -1*net ,
                             total_credits_given = total_credits_given)
@@ -622,12 +624,13 @@ ggplot(data = results_final, aes(x = threshold_in_pct, y = total_credits_given))
   theme_bw()+
   scale_x_continuous(breaks = c(0,10,20,30,40,50,60,70,80,90,100))+
   labs(y='Total Credits Given',x='Threshold')+
-  ggtitle("Number of Credits Givenby Treshold")+
+  ggtitle("Number of Credits Given by Treshold")+
   theme(panel.grid.major.x = element_blank(),
         panel.grid.minor.x = element_blank())
 )
 
 ```
+
 The table below compares the net loss and the number of credits given from using our selected threshold of ninety and the default threshold of fifty. We can observe that adjusting the threshold results in a larger number of homeowners taking the credit and a lower net public loss when compared to the default treshold of 50.
 
 ```{r table}
